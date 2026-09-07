@@ -96,9 +96,9 @@ while (!scheduler.is_finished()) {
 该场景使用 435,556 个模型激活元素，而 B=3、T=18 的完整前缀 reference 使用
 14,756,418 个激活元素。这个数字只描述该固定测试形状，不是通用显存节省比例。
 
-## 完成后再做什么
+## 后续任务的完成情况
 
-1. 建立可重复 Benchmark，报告 TTFT、TPOT、总吞吐、P50/P95 和 KV Cache 使用量。
-2. CUDA Decode PagedAttention、GPU ModelRunner 和 Multi-Token Prefill 均已接通；下一步实现低精度。
-3. 实现 Prefix Cache、Block 引用计数和抢占。
-4. 在主链路稳定后再加入 Tensor Parallel 与 CUDA Graph。
+1. 可重复 Benchmark 已完成，报告 TTFT、TPOT、吞吐、P50/P95 和原始 JSON/CSV。
+2. CUDA PagedAttention、GPU ModelRunner、Packed Prefill 与 FP16/BF16 已接通。
+3. 完整 Block Prefix Cache、引用计数和 LRU 已完成；抢占仍未实现。
+4. Residual + LayerNorm 融合与 CUDA Graph 已完成，详见任务 07 学习手册。

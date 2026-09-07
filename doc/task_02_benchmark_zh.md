@@ -44,10 +44,11 @@ CPU 完整前缀重算虽然重复计算历史 Token，但能把多个 Token 合
 Continuous Batching 通过动态 Batch 提高了吞吐和尾部完成时间；当前 Token Budget 为 64，
 一次较大的 Prefill chunk 会延迟整轮 commit，因此活跃 Decode 请求的 TPOT 偏高。
 
-这些结果给出两个明确优化方向：
+这些结果当时给出两个优化方向，后续任务均已完成：
 
-1. 为 Prefill 增加多 Token 执行路径，避免逐 Token GEMV。
-2. CUDA PagedAttention 与 Multi-Token Prefill 已完成；Token Budget Sweep 已量化 TTFT、TPOT 和吞吐的关系，下一步实现 FP16/BF16。
+1. Packed Multi-Token Prefill 已将同轮 Token 合并为 GEMM，避免逐 Token GEMV。
+2. CUDA PagedAttention、Token Budget Sweep、FP16/BF16、CUDA Graph 与 Prefix Cache 已接通；
+   各阶段结果见任务 03--08 文档。
 
 ## 复现
 

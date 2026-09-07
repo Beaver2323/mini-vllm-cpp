@@ -1,169 +1,465 @@
-# llm.c 项目：简历、源码与面试学习手册
+# Mini-vLLM C++ 源码学习手册
 
-本手册基于当前工作区的 `train_gpt2.cpp`、`paged_kv_cache.hpp` 和 `train_gpt2.c`。
-目标是能解释自己的实现、验证它、说明局限，并逐步补齐工程能力。
-简历替换片段见同目录 `resume_project.tex`。以下区分现有能力与后续建设，不将计划写成已完成成果。
+本文是整个项目的学习入口，负责回答“先学什么、去哪里看、从哪里调用、怎样验证”。每个
+专项文档继续解释实现细节。不要一次把所有文件通读；按本文的阶段完成代码跟踪和练习。
 
-## 1. 当前代码能支撑什么
+## 1. 先建立全局图
 
-| 能力 | 代码依据 | 可表述的范围 |
-| --- | --- | --- |
-| 单 Token 增量解码 | `gpt2_forward_inference` | 只处理当前 Token，逐层复用历史 KV |
-| 分页缓存池 | `KVCachePool` | CPU `malloc` 预分配 K/V 池，16 Token 一页 |
-| 逻辑页映射 | `PageTable::block_tables` | 不同序列可映射到池内不连续的页 |
-| 按需分配 | 生成循环中的取模判断 | 每到新页边界，从已预分配的池中领取页 |
-| Attention 并行 | `omp parallel for collapse(2)` | batch 与 head 维度上的 CPU 并行 |
-| 生命周期管理 | `KVCachePool` 析构 | 整个池销毁时释放，尚无单页归还接口 |
-| 正确性验证 | `dev/test_paged_attention_resume.cpp`、`dev/test_gpt2_paged_inference.cpp` | 算子级独立参考及模型级全词表 logits 对齐 |
+项目分成控制面和执行面：
 
-原简历中的“显存”“动态回收”“动态显存调度”超出了当前代码实现。
-仓库存在 CUDA 训练代码，不代表这条新增的分页推理链路使用了 CUDA。
-建议项目定位为“基于 llm.c 的 GPT-2 增量推理与分页 KV Cache”，技术栈写 C/C++、OpenMP。
+```text
+用户 add_request
+  └─ Sequence：Token、状态、计算进度、Block Table
+       └─ Scheduler::schedule：选择请求和本轮 Token 数
+            └─ BlockManager：查 Prefix Cache、分配/共享物理页
+                 └─ ModelInput：Token、Position、Context、Slot、Block Table
+                      └─ GPT2CudaModelRunner::run
+                           ├─ Embedding / cuBLAS GEMM / LayerNorm / MLP
+                           ├─ CUDA PagedAttention：写新 KV、按页表读历史 KV
+                           ├─ Fusion / CUDA Graph
+                           └─ GPU Argmax
+                                └─ Scheduler::commit
+                                     ├─ 前移 computed tokens
+                                     ├─ 注册 Prefix Cache
+                                     ├─ 追加生成 Token
+                                     └─ 完成请求并释放 Block
+```
 
-## 2. 先分清两个优化
+总入口在
+[`GPT2CudaEngine::step`](../mini_vllm/cuda/gpt2_cuda_engine.hpp#L75-L98)：
 
-KV Cache 解决重复计算：自回归模型每步生成一个新 Token，旧 Token 在因果注意力下不受未来 Token 影响，因而各层旧 K/V 可以缓存。
-下一步只算新 Token 的 Q/K/V、投影、MLP，再让新 Q 读取全部已有 K/V。
-这里假设推理期间权重固定；当前代码每轮生成重新创建缓存池，避免跨训练更新继续使用旧 KV。
+```cpp
+SchedulerOutput output = scheduler_.schedule();
+result.sampled_token_ids = model_runner_.run(output);
+scheduler_.commit(output, result.sampled_token_ids);
+```
 
-分页解决存储组织：连续 KV Cache 也能实现增量推理；分页使一个序列的缓存可以由多个不连续块组成。
-不能把增量推理的计算收益全归因于分页。
+第一次阅读只需记住这三步。后续每个模块都能放回这条链路中。
 
-只看单层 Attention、固定 batch/head/head_dim，长度为 t 时：
+## 2. 完整学习路线
 
-| 方式 | 单次生成步骤的 Attention 工作量 |
-| --- | --- |
-| 重算整个长度 t 的前缀 | O(t²) |
-| 单 Token + 连续 KV Cache | O(t) |
-| 单 Token + 分页 KV Cache | O(t)，额外包含页表寻址 |
+| 阶段 | 需要掌握 | 主要代码 | 专项文档 | 完成标准 |
+| ---: | --- | --- | --- | --- |
+| 1 | Sequence 状态和 Token 记账 | `mini_vllm/sequence.hpp` | [任务 01](task_01_gpt2_model_runner_zh.md) | 手算 Prefill/Decode 的三个计数 |
+| 2 | Block Pool 和逻辑页表 | `mini_vllm/block_manager.hpp`、`paged_kv_cache.hpp` | [分页基础](#4-阶段二blockmanager-与分页地址) | 手算 Token 到物理 KV 地址 |
+| 3 | Token Budget 与 Continuous Batching | `mini_vllm/scheduler.hpp` | [任务 01](task_01_gpt2_model_runner_zh.md) | 手推三个请求的调度轨迹 |
+| 4 | Scheduler 到模型的五类元数据 | `mini_vllm/model_input.hpp` | [任务 05](task_05_multi_token_prefill_zh.md) | 解释每个数组由谁生产、谁消费 |
+| 5 | CPU Reference 和增量推理 | `mini_vllm/gpt2_model_runner.hpp`、`train_gpt2.cpp` | [任务 01](task_01_gpt2_model_runner_zh.md) | 解释旧 KV 为什么可复用 |
+| 6 | CUDA PagedAttention | `mini_vllm/cuda/paged_attention.cu` | [任务 03](task_03_cuda_paged_attention_zh.md) | 能讲清 Grid、页表寻址和 Softmax |
+| 7 | GPU Runner 与 Packed Prefill | `mini_vllm/cuda/gpt2_cuda_model_runner.cu` | [任务 04](task_04_gpu_model_runner_zh.md)、[任务 05](task_05_multi_token_prefill_zh.md) | 从 Schedule 跟踪到 Argmax |
+| 8 | FP16/BF16 与 Tensor Core | 同上 `matmul`、低精度 Kernel | [任务 06](task_06_mixed_precision_zh.md) | 解释存储精度和累加精度 |
+| 9 | Fusion 与 CUDA Graph | 同上 `forward<T>` | [任务 07 详细手册](task_07_fusion_cuda_graph_zh.md) | 解释固定地址与动态数据 |
+| 10 | Prefix Cache | `block_manager.hpp`、`scheduler.hpp` | [任务 08 详细手册](task_08_prefix_cache_zh.md) | 跟踪命中、共享、释放和 LRU |
+| 11 | Benchmark 与性能证据 | `benchmark/`、`benchmark/results/` | [任务 02](task_02_benchmark_zh.md) | 区分 TTFT、TPOT、吞吐和初始化成本 |
 
-这不是端到端延迟倍数。模型还有矩阵乘、词表投影、内存访存等成本。
-原版生成入口实际上使用固定长度 T 的前向，因此对它做实验时应报告实际 T，不能直接把理论前缀复杂度当成测量结果。
+建议每天只完成一个阶段。先读“主要代码”，再运行指定测试，最后不看文档复述调用链。
 
-## 3. 跟踪一个 Token
+## 3. 阶段一：Sequence 是请求状态的唯一来源
 
-先读 `train_gpt2.cpp` 的生成循环，再读 `gpt2_forward_inference`，最后进入 `paged_attention_forward`。
+### 代码位置
 
-每次循环：
+- 数据结构：[`mini_vllm/sequence.hpp:12--84`](../mini_vllm/sequence.hpp#L12-L84)
+- 构造入口：[`GPT2CudaEngine::add_request`](../mini_vllm/cuda/gpt2_cuda_engine.hpp#L46-L73)
+- 状态消费者：[`Scheduler::schedule`](../mini_vllm/scheduler.hpp#L56-L83)
+- 状态更新：[`Scheduler::commit`](../mini_vllm/scheduler.hpp#L87-L120)
 
-1. 检查当前已缓存长度是否到达页边界，必要时领取页并填写页表。
-2. 当前输入 Token 加上绝对位置为 `seq_len - 1` 的位置向量。
-3. 每层完成 LayerNorm → QKV 投影 → 分页 Attention → 输出投影及残差 → LayerNorm → MLP 及残差。
-4. 最终 LayerNorm、词表投影、Softmax，采样得到下一 Token。
-5. 下一轮才为刚采样的 Token 计算并写入 KV。
+### 三个最重要的计数
 
-为什么位置编码不能总取 0？传给基础算子的 T=1 表示本次只处理一个 Token，但它在整个上下文中仍然有自己的绝对位置。
+```cpp
+std::size_t num_tokens() const;           // 当前已有 Prompt + 生成 Token
+std::size_t num_prompt_tokens() const;    // 构造后固定
+std::size_t num_computed_tokens() const;  // 已经执行模型并写好 KV 的 Token
 
-为什么通常不缓存旧 Q？未来步骤用当前 Q 与历史 K/V 计算输出，不需要旧 Q。
+std::size_t pending_tokens() const {
+    return token_ids_.size() - num_computed_tokens_;
+}
+```
 
-当前实现从 EOT Token 开始生成；尚无独立的 prompt prefill API。
-逐 Token 消费 prompt 可以作为正确性起点，批量 prefill 的高效实现属于后续工作。
+例：Prompt 长 5，第一次 Prefill 完成并采样 Token 99 后：
 
-## 4. 手算页表与地址
+```text
+刚创建：num_tokens=5, num_prompt_tokens=5, num_computed_tokens=0
+Prefill Commit：先 computed=5，再 append 99，所以 num_tokens=6
+下一轮 Decode：pending_tokens=6-5=1
+```
 
-设页大小 P=16，序列 A 的 Block Table 是 `[5, 2, 9]`。
+`append_token` 要求 `num_computed_tokens == token_ids.size()`，确保只有当前所有输入都计算完
+才能追加采样结果。这里是状态不变量，建议在
+[`append_token`](../mini_vllm/sequence.hpp#L59-L64) 下断点观察。
 
-| 逻辑 Token 下标 | 逻辑页号 t / 16 | 页内偏移 t % 16 | 池内物理页号 |
-| --- | --- | --- | --- |
-| 0 | 0 | 0 | 5 |
-| 15 | 0 | 15 | 5 |
-| 16 | 1 | 0 | 2 |
-| 20 | 1 | 4 | 2 |
-| 32 | 2 | 0 | 9 |
+### 必须回答
 
-这里“物理页”是应用管理的缓存块，不是操作系统物理页帧，也不是实际 CPU 物理地址。
-底层 K 和 V 分别通过一次连续 malloc 分配；不连续指一个序列拿到的块编号可以不连续。
+- Prefill 和 Decode 是否由两个 Sequence 类表示？不是，由 `is_prefill()` 根据计数判断。
+- 新生成 Token 何时写 KV？采样后只追加到 Sequence，下一轮 Decode 执行时才写 KV。
 
-缓存布局是 `[num_pages, num_layers, num_heads, page_size, head_size]`。
-令 p 为物理页号、l 为层号、h 为头号、o 为页内 Token 偏移、d 为头内元素下标，则元素偏移为：
+## 4. 阶段二：BlockManager 与分页地址
+
+### 代码位置
+
+- 控制面物理块：[`BlockManager`](../mini_vllm/block_manager.hpp#L22-L96)
+- Sequence 页表：[`Sequence::block_table`](../mini_vllm/sequence.hpp#L73-L83)
+- CPU KV 数据池：[`KVCachePool`](../paged_kv_cache.hpp#L15-L66)
+- CPU PagedAttention：[`paged_attention_forward`](../paged_kv_cache.hpp#L85-L175)
+- 分配/释放测试：[`test_block_allocation_release_and_reuse`](../dev/test_mini_vllm_control_plane.cpp#L19-L45)
+
+`BlockManager` 管“谁拥有哪一页”，`KVCachePool` 或 CUDA Runner 管“页里面的 K/V 数据”。
+两者通过相同的物理 Block ID 对接。
+
+```cpp
+const std::size_t logical_block = token_index / block_size_;
+const int physical_block = sequence.block_table()[logical_block];
+const std::size_t page_offset = token_index % block_size_;
+```
+
+缓存布局是：
+
+```text
+[physical_block, layer, head, page_offset, head_dimension]
+```
+
+元素偏移：
 
 ```text
 offset = ((((p * L + l) * H + h) * P + o) * D + d)
-address = cache_base + offset       // float 指针运算，单位是 float
-byte_offset = offset * sizeof(float)
 ```
 
-batch 没有显式出现在缓存维度里，因为不同 batch 序列通过各自页表领取不同的页。
-当前“一页”包含一个序列这 16 个 Token 在所有层、所有头上的 K 或 V。
+示例：Page Size 16，`block_table=[5,2,9]`。Token 20 的逻辑页为 1、页内偏移为 4，所以
+访问物理页 2。分页的“不连续”是 Block ID 不连续，底层大池仍可一次连续分配。
 
-练习：令 L=2、H=2、D=4，求 t=20、l=1、h=0、d=3 的位置。
-答案：p=2、o=4，offset=659，FP32 字节偏移=2636。
+### 容量保证调用点
 
-## 5. Attention 究竟算了什么
+Scheduler 在
+[`try_schedule`](../mini_vllm/scheduler.hpp#L131-L143) 中计算目标 Token 数：
 
-对当前 head，先把当前 K/V 写入它们的缓存位置，再遍历 s=0..t：
+```cpp
+const std::size_t count = std::min(sequence->pending_tokens(), budget);
+const std::size_t target = sequence->num_computed_tokens() + count;
+if (!block_manager_.ensure_capacity(*sequence, target)) return false;
+```
+
+`ensure_capacity` 先确认可用页数量，再统一分配，因此 OOM 不会留下半张 Block Table。
+
+## 5. 阶段三：Scheduler 与 Continuous Batching
+
+### 代码位置
+
+- 输出协议：[`ScheduledItem`、`SchedulerOutput`](../mini_vllm/scheduler.hpp#L21-L30)
+- 调度主函数：[`Scheduler::schedule`](../mini_vllm/scheduler.hpp#L56-L83)
+- 单请求调度：[`Scheduler::try_schedule`](../mini_vllm/scheduler.hpp#L123-L144)
+- 状态提交：[`Scheduler::commit`](../mini_vllm/scheduler.hpp#L87-L120)
+- 测试：[`test_chunked_prefill`](../dev/test_mini_vllm_control_plane.cpp#L47-L68)、[`test_continuous_admission_and_retirement`](../dev/test_mini_vllm_control_plane.cpp#L90-L118)
+
+调度顺序先 Running、后 Waiting：
+
+```cpp
+for (const auto& sequence : running_) {
+    try_schedule(sequence, output);
+}
+while (!waiting_.empty() && budget_remains) {
+    if (!try_schedule(waiting_.front(), output)) break;
+    // Waiting → Running
+}
+```
+
+这让已经在 Decode 的请求优先前进，保护 Inter-Token Latency；剩余 Token Budget 用于准入
+新请求。`count = min(pending_tokens, budget)` 让长 Prompt 被拆成多个 Chunk。
+
+### 手算练习
+
+配置 `max_num_sequences=2, max_num_batched_tokens=5`，请求 A Prompt 5、请求 B Prompt 2。
+第一轮 A 使用全部 5 Token；下一轮 A 有 1 个 Decode Token，B 可用剩余 4 Token 中的 2 个，
+于是同一轮出现 Decode + Prefill。对应断言在测试 100--110 行。
+
+## 6. 阶段四：ModelInput 是控制面和 CUDA 的契约
+
+### 代码位置
+
+- 结构定义：[`ModelInput`](../mini_vllm/model_input.hpp#L15-L31)
+- Packed 构造：[`prepare_packed_model_input`](../mini_vllm/model_input.hpp#L41-L110)
+- GPU 调用：[`GPT2CudaModelRunner::Impl::run`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L711-L753)
+- GPU H2D：[`forward<T>`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L940-L960)
+
+| 数组 | 生产方式 | GPU 消费位置 | 含义 |
+| --- | --- | --- | --- |
+| `token_ids` | Sequence 当前待算 Token | Embedding Kernel | 查 Token Embedding |
+| `positions` | `computed + offset` | Embedding Kernel | 查绝对位置编码 |
+| `context_lengths` | `position + 1` | PagedAttention | 当前 Q 可见多少历史 Token |
+| `slot_mapping` | 物理块 × 页大小 + 页内偏移 | Write KV Kernel | 新 K/V 写到哪里 |
+| `block_tables` | 复制 Sequence 页表 | Attention Kernel | 历史逻辑 Token 在哪个物理页 |
+| `query_start_locations` | 每请求在 Packed Batch 的边界 | Runner 采样映射 | 哪一行属于哪个请求 |
+
+核心地址构造位于 62--100 行：
+
+```cpp
+const std::size_t position = sequence.num_computed_tokens() + offset;
+const int physical_block =
+    block_manager.block_id_for_token(sequence, position);
+const std::size_t physical_slot =
+    physical_block * block_manager.block_size() +
+    block_manager.slot_for_token(position);
+```
+
+这是面试中最值得手画的数据流：Scheduler 不传裸 K/V 指针，只传逻辑进度和 Block Table，
+ModelInput 把它们转成设备 Kernel 所需的紧凑元数据。
+
+## 7. 阶段五：CPU 路径是正确性 Reference
+
+### 代码位置
+
+- CPU Runner：[`mini_vllm/gpt2_model_runner.hpp`](../mini_vllm/gpt2_model_runner.hpp#L19-L149)
+- 推理 Workspace：[`train_gpt2.cpp:38`](../train_gpt2.cpp#L38)
+- 增量模型前向：[`gpt2_forward_inference_with_workspace`](../train_gpt2.cpp#L389)
+- CPU PagedAttention：[`paged_kv_cache.hpp:85`](../paged_kv_cache.hpp#L85)
+- 模型级测试：[`dev/test_gpt2_engine.cpp`](../dev/test_gpt2_engine.cpp)
+
+CPU Runner 为 Chunked Prefill 建立多个单 Token 微批次：
+
+```cpp
+for (std::size_t micro_step = 0; micro_step < max_micro_steps; ++micro_step) {
+    ModelInput input = prepare_model_input(output, micro_step, ...);
+    gpt2_forward_inference_with_workspace(
+        &model_, input.token_ids.data(), &kv_cache_pool_, &page_table,
+        input.batch_size(), &workspace_);
+}
+```
+
+它速度不是最终目标，作用是把调度、分页和增量推理逻辑做成易调试基线。GPU 测试用完整
+前缀 CPU Forward 比较全词表 logits，避免 CUDA 实现自己和自己对比。
+
+旧 Token 的 K/V 可以复用，因为因果注意力中位置 `i` 看不到未来 Token；新增 Token 不会
+改变 `i` 已经算出的 K/V。旧 Q 不需要缓存，因为下一步只使用新 Token 的 Q 查询历史 K/V。
+
+## 8. 阶段六：CUDA PagedAttention
+
+### 代码位置
+
+- 接口与 Page Size：[`paged_attention.cuh`](../mini_vllm/cuda/paged_attention.cuh#L11-L52)
+- 写 KV：[`write_kv_cache_kernel`](../mini_vllm/cuda/paged_attention.cu#L57-L104)
+- Attention：[`paged_attention_kernel`](../mini_vllm/cuda/paged_attention.cu#L106-L254)
+- Launch 封装：[`paged_attention_decode_impl`](../mini_vllm/cuda/paged_attention.cu#L256-L292)
+- 独立测试：[`dev/cuda/test_paged_attention.cu`](../dev/cuda/test_paged_attention.cu)
+
+Launch Grid 是：
+
+```cpp
+const dim3 grid(batch_size, num_heads);
+```
+
+所以一个 CUDA Block 处理一个 Packed Token 的一个 Attention Head。先启动
+`write_kv_cache_kernel` 写本轮 K/V，再启动 `paged_attention_kernel` 读取从位置 0 到
+`context_length-1` 的所有 K/V。
+
+写地址来自 `slot_mapping`：
+
+```cpp
+const int physical_slot = slot_mapping[request];
+const int physical_block = physical_slot / kPagedAttentionPageSize;
+const int page_offset = physical_slot % kPagedAttentionPageSize;
+```
+
+读历史地址来自 `block_tables`：
+
+```cpp
+const int physical_block = block_tables[
+    request * max_blocks_per_sequence +
+    token / kPagedAttentionPageSize];
+const int page_offset = token % kPagedAttentionPageSize;
+```
+
+两套元数据作用不同：Slot Mapping 是本轮单点写位置；Block Table 是整个历史读取映射。
+Softmax 使用减最大值保证稳定性，低精度存储路径仍转 FP32 累加。
+
+## 9. 阶段七：GPU Runner 与 Packed Prefill
+
+### 代码位置
+
+- 配置/接口：[`gpt2_cuda_model_runner.cuh`](../mini_vllm/cuda/gpt2_cuda_model_runner.cuh#L13-L58)
+- 设备 Buffer 生命周期：[`gpt2_cuda_model_runner.cu:650--709`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L650-L709)
+- Runner 上层入口：[`Impl::run`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L711-L753)
+- Transformer 前向：[`forward<T>`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L940-L1199)
+- 端到端测试：[`test_gpt2_cuda_model_runner.cu`](../dev/cuda/test_gpt2_cuda_model_runner.cu)
+
+GPU Runner 不为每步重新 `cudaMalloc`。权重、KV Cache、中间激活和 logits 在构造时按最大
+容量分配并保持地址稳定。每轮只上传 ModelInput 元数据，最后只把 Argmax Token 拷回 CPU。
+
+核心层循环按以下次序读：
 
 ```text
-score[s] = dot(q[t], k[s]) / sqrt(head_size)
-weight[s] = exp(score[s] - max(score)) / sum(exp(score - max(score)))
-out[t] = sum_s weight[s] * v[s]
+Embedding
+for each layer:
+  LayerNorm1
+  QKV GEMM + Split QKV
+  Write KV + PagedAttention
+  Attention Projection + Residual
+  LayerNorm2
+  FC GEMM + GELU + Projection + Residual
+Final LayerNorm + Vocabulary GEMM + Argmax
 ```
 
-访问 k[s] 和 v[s] 前需要通过页表找到实际地址。数学结果不应依赖物理页排列。
-这也是正确性测试必须故意打乱页号的原因：只测顺序分配容易漏掉把逻辑页号误当物理页号的错误。
-只遍历已存在的 Token，因此单 Token decode 不需要显式构造上三角 mask。
+Packed Prefill 把多个请求本轮的所有 Token 作为 GEMM Batch 维度。每个 Token 仍有自己的
+Position、Context Length、Slot 和 Block Table，所以合并 GEMM 不会破坏因果性。
 
-OpenMP 并行的是 `(b, h)`：各 worker 写不同的 head 区域和 scratch 区域，层循环仍是顺序执行。
-这个 CPU 实现没有 CUDA thread block、共享内存或 warp reduction，也没有实现 FlashAttention。
+## 10. 阶段八：FP16/BF16、Tensor Core 和数值边界
 
-## 6. 内存数字怎么算
+专项阅读：[任务 06：混合精度](task_06_mixed_precision_zh.md)。
 
-缓存有效内容的字节数为 `2 × L × H × D × token_count × bytes_per_element`。
-前面的 2 是 K 和 V；这里是普通多头注意力，H 为 KV 头数。
+### 代码位置
 
-以 L=12、H=12、D=64、FP32 为例：
+- 精度枚举：[`CudaDataType`](../mini_vllm/cuda/gpt2_cuda_model_runner.cuh#L13-L17)
+- 普通 GEMM：[`matmul`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L847-L885)
+- 词表 GEMM：[`logits_matmul`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L887-L911)
+- `half2` PagedAttention：[`paged_attention.cu:76--93`](../mini_vllm/cuda/paged_attention.cu#L76-L93)
 
-- 每 Token KV：`2 × 12 × 12 × 64 × 4 = 73,728 B = 72 KiB`。
-- 每个 16 Token 页的 K+V：1.125 MiB。
-- B=4、每序列容量 64 Token 时，整池容量为 18 MiB。
+低精度路径使用 FP16/BF16 存权重、激活和 KV Cache；LayerNorm 均值/方差、Attention Dot、
+Softmax 和 Value 聚合用 FP32 累加。`cublasGemmEx` 指定 `CUBLAS_COMPUTE_32F` 和
+`CUBLAS_GEMM_DEFAULT_TENSOR_OP`，让存储精度与累加精度分离。
 
-按需领取页不等于按需执行 malloc：当前池在构造时预留全部容量，后续只分配页的所有权。
-每个非空序列最后一页最多浪费 15 个 Token 槽位。但本实现按最大生成长度创建足量页池，尚未通过多请求回收和复用展示内存利用率提升。
-不能把这 18 MiB 当成进程总内存；权重、训练激活等仍占内存。
+当前正式推荐 FP16。BF16 已接通，但 GPT-2 测试存在 Argmax 分歧，因此文档和简历不能把
+BF16 写成与 FP16 同等级的正式性能结论。
 
-## 7. 已完成的验证与如何复现
+## 11. 阶段九：Fusion 与 CUDA Graph
 
-从 `llm.c` 目录执行，使用用户指定的 zyf1 环境绝对路径：
+详细阅读：[任务 07：Fusion 与 CUDA Graph 逐函数手册](task_07_fusion_cuda_graph_zh.md)。
+
+### 最短调用路径
+
+```text
+GPT2CudaConfig.enable_fused_residual_layernorm / enable_cuda_graph
+  └─ Impl::forward<T>
+       ├─ copy_metadata（Graph 外）
+       ├─ cuda_graphs_.find(total_tokens)
+       ├─ Replay，或 Capture 整段计算
+       └─ fused_residual_layernorm（Attention 后、MLP 后）
+```
+
+关键代码：
+
+```cpp
+copy_metadata(...);                       // 更新固定地址里的动态数据
+const auto graph = cuda_graphs_.find(batch_size);
+if (graph != cuda_graphs_.end()) {
+    cudaGraphLaunch(graph->second.executable, stream_.get());
+}
+```
+
+Graph 固定设备地址和执行拓扑，数据由 Replay 前的 H2D 更新。Fusion 单独使用是负优化；
+四组 A/B 中 Graph 是主要收益。不要用“Kernel 少了”直接推出“更快”。
+
+## 12. 阶段十：Prefix Cache
+
+详细阅读：[任务 08：Prefix Cache 逐函数手册](task_08_prefix_cache_zh.md)。
+
+### 最短调用路径
+
+```text
+Scheduler::try_schedule(Waiting)
+  └─ BlockManager::apply_prefix_cache
+       ├─ 查完整历史 Token Key
+       ├─ 增加物理页引用
+       ├─ 写 Sequence Block Table
+       └─ mark_computed(命中页数 × Page Size)
+            └─ Scheduler 只调度剩余 Token
+
+Scheduler::commit
+  └─ cache_computed_prefix_blocks
+       └─ Cache 持有额外引用
+```
+
+核心代码：
+
+```cpp
+++block.ref_count;
+sequence.block_table().push_back(block.id);
+sequence.mark_computed(hits * block_size_);
+```
+
+三行分别建立所有权、物理映射和计算跳过。缺任何一个都不构成正确的 Prefix Cache。
+
+## 13. 阶段十一：测试与 Benchmark 去哪里看
+
+| 你要验证的能力 | 测试/Benchmark | 关键观察值 |
+| --- | --- | --- |
+| Block 分配、OOM、调度、Prefix LRU | `dev/test_mini_vllm_control_plane.cpp` | Block Table、Free Count、Ref Count |
+| CPU PagedAttention 数学正确性 | `dev/test_paged_attention_resume.cpp` | 与独立 Dense Reference 误差 |
+| CPU Engine 闭环 | `dev/test_gpt2_engine.cpp` | 混合 Prefill/Decode、Token 一致 |
+| CUDA PagedAttention | `dev/cuda/test_paged_attention.cu` | 跨页/乱序页、memcheck/racecheck |
+| GPU Runner | `dev/cuda/test_gpt2_cuda_model_runner.cu` | 全词表 logits、Argmax、Graph 数 |
+| GPU Prefix Cache | `dev/cuda/test_gpt2_cuda_prefix_cache.cu` | 18 Token 只调度 2 Token |
+| CPU 服务指标 | `benchmark/benchmark_gpt2_serving.cpp` | TTFT、TPOT、吞吐 |
+| CUDA 服务与 A/B | `benchmark/benchmark_gpt2_cuda_serving.cu` | Fusion/Graph 四组合 |
+
+构建和运行：
 
 ```bash
-conda run -p /home/miniconda3/envs/zyf1 g++ -std=c++17 -O2 -fopenmp dev/test_paged_attention_resume.cpp -o /tmp/zyf_paged_attention_test
-OMP_NUM_THREADS=2 conda run -p /home/miniconda3/envs/zyf1 /tmp/zyf_paged_attention_test
+cd /home/users/zyf/zyf_llm.c/llm.c
+
+make test_minivllm_control_plane test_gpt2_engine
+./test_minivllm_control_plane
+OMP_NUM_THREADS=16 ./test_gpt2_engine
+
+make GPU_COMPUTE_CAPABILITY=86 \
+  test_cuda_paged_attention test_gpt2_cuda_model_runner \
+  test_gpt2_cuda_prefix_cache benchmark_gpt2_cuda_serving
+
+CUDA_VISIBLE_DEVICES=0 ./test_cuda_paged_attention
+CUDA_VISIBLE_DEVICES=0 ./test_gpt2_cuda_model_runner --precision fp16 --cuda-graph
+CUDA_VISIBLE_DEVICES=0 ./test_gpt2_cuda_prefix_cache
 ```
 
-本次结果：`max_abs_error=1.45372e-07`，退出码 0，阈值为 `1e-5`。
-覆盖 B=2、L=2、NH=2、head_size=4，逐步长度 1..33，反向且交错分配的物理页。
-参考实现直接从稠密 QKV 历史读取，采用 double 累加，不通过被测页表访问数据。
-该算子测试不依赖权重文件，不代表性能达标。另一个模型级测试使用 GPT-2 124M 权重，
-让两个异长请求在分页增量推理中动态加入和退出，活跃批次经历 1→2→1；请求 0 覆盖
-长度 1..33，请求 1 覆盖长度 1..20。测试在每个有效位置比较完整前缀前向的 50,257 个
-词表 logits；反向、交错分配物理页后最大绝对及相对误差均为 0。
+## 14. 性能结果应怎样解释
 
-## 8. 下一步怎样实质升级项目
+固定 RTX 3090、4 请求、Prompt 8/16/24/32、每请求生成 4 Token：
 
-按建议顺序推进，括号内为当前状态。
+| 阶段 | 吞吐 | 相对上一关键基线 | 主要变化 |
+| --- | ---: | ---: | --- |
+| CUDA 逐 Token Prefill | 295.708 tok/s | 基线 | 每个 Token 单独模型调用 |
+| Packed Prefill FP32 | 1838.148 tok/s | 6.2× | 合并 GEMM，Launch 数下降 |
+| Packed Prefill FP16 | 2738.953 tok/s | +46.8% vs 同版 FP32 | Tensor Core、低精度存储 |
+| FP16 + CUDA Graph | 3068.092 tok/s | +15.9% vs FP16 Eager | 降低 CPU Launch 开销 |
+| FP16 + Fusion + Graph | 3189.767 tok/s | +20.5% vs FP16 Eager | Graph 加融合组合 |
 
-1. **独立推理入口与工作区（已完成）**：按 T=1 推理形状分配缓冲，并单独分配线性 Attention scratch。
-2. **控制面接入模型（已完成）**：ModelRunner 已整理 token、position、context length、slot mapping 与 block table。
-3. **调度与执行闭环（已完成）**：Engine 已连接 schedule、run、greedy sample、commit 和页回收。
-4. **可信 Benchmark（已完成 CPU 基线）**：比较完整前缀重算、分页增量和连续批处理；固定权重、Token、线程数、编译选项及长度，记录预热后多次延迟、吞吐和内存口径。
-5. **设备算子扩展（已完成 Multi-Token Prefill）**：FP32 CUDA PagedAttention 已接入 12 层 GPT-2 GPU ModelRunner；Packed Prefill 将同轮异长 Token 合并为 GEMM，通过完整词表 reference、memcheck、racecheck 与 RTX 3090 Benchmark。下一步实现低精度。
+这些数字只对应固定测试负载，不代表所有 Batch、Prompt 和 GPU。面试时应同时说清硬件、
+精度、请求形状、Warmup 和比较基线。
 
-现有细节也值得修复：页表初始化为 0 会把未分配项伪装成合法页；softmax 最大值初值应使用负无穷而不是 -10000；裸指针所有权需要禁用拷贝或使用 RAII；推理入口缺少 Token 和上下文长度等输入校验。
-`acts.preatt` 被用作 `[B, NH, max_seq_len]` scratch，但实际空间按训练 T 分配，需显式验证容量，不能依赖默认配置碰巧够大。
+## 15. 学习时的断点清单
 
-## 9. 一分钟项目讲述
+按一次 18 Token、命中 16 Token Prefix 的请求设置：
 
-“我基于 llm.c 的 GPT-2 实现了 CPU/CUDA 双路径增量推理和连续批处理。控制面包含 Sequence、BlockManager、Token Budget Scheduler 和 Chunked Prefill；ModelRunner 将调度结果转换为 Block Table、Slot Mapping 等设备元数据。我实现 FP32 CUDA PagedAttention，并接入完整 12 层 GPT-2，权重、KV Cache、中间激活和 logits 驻留 GPU，设备侧完成 Argmax。进一步将同轮异长 Prompt 压成 Packed Token Batch，使线性层由重复 GEMV 转为 GEMM，同时通过逐 Token Context Length 保证因果性。完整词表 logits 与 CPU Reference 最大绝对误差为 $2.67\times10^{-4}$，生成 Token 完全一致；固定负载达到 1838.148 tok/s，相对逐 Token GPU 基线提升 6.2 倍，Nsight 中 Kernel Launch 减少 87.6\%。”
+1. `GPT2CudaEngine::add_request`：看初始 Sequence。
+2. `Scheduler::try_schedule`：进入 Waiting 分支。
+3. `BlockManager::apply_prefix_cache`：看 Hit 和 Ref Count。
+4. `Scheduler::try_schedule` 的 `count`：确认只剩 2。
+5. `prepare_packed_model_input`：确认 positions 是 16、17。
+6. `GPT2CudaModelRunner::Impl::run`：确认 Packed Batch Size 为 2。
+7. `forward<T>` 的 `copy_metadata`：确认五类 H2D 数据。
+8. `cuda_graphs_.find`：看对应 Shape 的 Capture 或 Replay。
+9. `paged_attention_decode`：看共享 Block Table 进入 GPU。
+10. `Scheduler::commit`：看 computed、Cache 注册、Token 追加和 Release。
 
-理解每句话再用于面试。新增测试是在本次协作中补充的，应先读懂参考实现与测试覆盖范围。
+如果 CUDA Kernel 不能直接断点，先在 Host 调用点打印元数据，再使用 Compute Sanitizer 或
+Nsight Systems 验证设备执行。
 
-## 10. 自测题
+## 16. 面试前必须能独立回答
 
-1. 若页表从 `[0,1,2]` 换成 `[5,2,9]`，输出应该变化吗？不应，前提是数据同步存放到相应页。
-2. 为什么第 17 个 Token 要申请新页？它下标为 16，已有页只容纳下标 0..15。
-3. PagedAttention 是否天然比连续 KV 更快？没有这种保证；它改变缓存组织，也增加地址间接访问。
-4. 当前 continuous batching 闭环在哪里？`GPT2Engine::step` 依次调用 schedule、ModelRunner、greedy sample 和 commit，并在请求完成时释放 Block。
-5. `free_pages` 是栈，是否意味着 CPU 调用栈或栈帧？不是，它是 vector 实现的索引栈，`num_free_pages` 表示有效空闲项数量。
-6. 怎么证明速度收益来自哪里？用完整前缀重算→连续 KV 衡量缓存收益，再用连续 KV→分页 KV 分离布局与页管理影响。
+1. KV Cache 为什么减少计算？为什么不缓存 Q？
+2. PagedAttention 为什么改善内存管理，但不保证单 Kernel 更快？
+3. `slot_mapping` 和 `block_tables` 有何区别？
+4. Chunked Prefill 怎样与 Decode 混在一个调度轮？
+5. Packed Prefill 为什么仍保持因果性？
+6. 为什么 FP16 存储仍用 FP32 做 LayerNorm 和 Softmax 归约？
+7. CUDA Graph 固定地址后，动态请求如何更新？
+8. Fusion 为什么会负优化？怎样设计 A/B 才能发现？
+9. Prefix Cache Key 为什么包含完整历史？
+10. 为什么 Cache-only 页可驱逐，活跃共享页不可驱逐？
+11. 为什么当前实现不缓存最后一个 Prompt Block？
+12. GPU Prefix Cache 测试怎样证明复用了真实 KV 数据？
 
-阅读材料：[PagedAttention 原论文](https://arxiv.org/abs/2309.06180)。论文解释分页 KV 的设计动机与服务系统应用；其中 vLLM 的吞吐数字不能用于本项目的简历。
+## 17. 推荐的实际学习节奏
+
+第一遍只读 `Sequence → Scheduler → BlockManager → Engine::step`，运行控制面测试。第二遍加
+`ModelInput → CPU Runner → PagedAttention`，手算一条页表。第三遍进入 CUDA Runner，先跟
+Packed Prefill，再跟混合精度。第四遍只学习任务 07 的 Fusion/Graph。第五遍只学习任务 08
+的 Prefix Cache。
+
+每一遍都输出三样东西：一张调用图、一个手算例子、一次测试结果。能在不看文档时把这三样
+复述出来，才算真正掌握；不用一次记住所有 Kernel 细节。

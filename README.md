@@ -87,8 +87,16 @@ greedy sampling 和状态提交。
 | `dev/cuda/test_gpt2_cuda_prefix_cache.cu` | 共享物理 KV Block 的 GPU 模型级测试 |
 | `benchmark/benchmark_cuda_paged_attention.cu` | CUDA Kernel 延迟与有效带宽测试 |
 | `benchmark/benchmark_gpt2_cuda_serving.cu` | GPU 服务 TTFT、TPOT 与吞吐测试 |
-| `doc/mini_vllm_roadmap_zh.md` | 开发路线、实验结果和学习顺序 |
-| `doc/paged_inference_learning_zh.md` | 分页推理原理与代码讲解 |
+| `doc/paged_inference_learning_zh.md` | 总学习入口：逐阶段代码位置、调用链、关键代码与断点清单 |
+| `doc/mini_vllm_roadmap_zh.md` | 开发路线、完成状态与 nano-vLLM 对照 |
+| `doc/task_01_gpt2_model_runner_zh.md` | Sequence、Scheduler 与 CPU ModelRunner 闭环 |
+| `doc/task_02_benchmark_zh.md` | TTFT、TPOT、吞吐与可复现实验方法 |
+| `doc/task_03_cuda_paged_attention_zh.md` | CUDA PagedAttention Kernel 与页表寻址 |
+| `doc/task_04_gpu_model_runner_zh.md` | GPU ModelRunner、设备内存与端到端调用链 |
+| `doc/task_05_multi_token_prefill_zh.md` | Packed Multi-Token Prefill 与因果元数据 |
+| `doc/task_06_mixed_precision_zh.md` | FP16/BF16、Tensor Core 与 FP32 归约 |
+| `doc/task_07_fusion_cuda_graph_zh.md` | Fusion/CUDA Graph 逐函数讲解与四组 A/B |
+| `doc/task_08_prefix_cache_zh.md` | Prefix Cache 内容 Key、引用计数、LRU 与 GPU KV 复用 |
 
 ## 构建
 

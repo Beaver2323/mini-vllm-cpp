@@ -18,9 +18,12 @@
 | 动态 Batch 执行原语 | 已完成 | 每个请求独立 context length，支持中途加入和提前退出 |
 | Scheduler/ModelRunner 闭环 | 已完成 CPU/CUDA 基线 | 混合 Decode/Chunked Prefill、设备 Argmax、commit/release |
 | 可复现 Benchmark | 已完成 CPU/CUDA 基线 | TTFT/TPOT、吞吐、CSV/JSON 与 Nsight Systems 结果 |
-| 抢占与 Prefix Cache | 未完成 | Block 引用计数已预留 |
+| Prefix Cache | 已完成第一版 | 完整 Block 内容寻址、引用计数共享、LRU 驱逐与 GPU KV 复用 |
+| 抢占 | 未开始 | 后续按学习需要单独设计 |
 | CUDA Paged Attention | 已完成并接入 GPT-2 | GPU KV Cache、Slot Mapping、模型级 reference 与 Sanitizer |
 | Multi-Token Prefill | 已完成第一版 | Packed Token GEMM、因果分页 Attention、Token Budget Sweep |
+| FP16/BF16 | 已完成 | FP16 正式路径、BF16 实验路径、Tensor Core 与 FP32 归约 |
+| Residual + LayerNorm / CUDA Graph | 已完成实验版 | 四组 A/B、Graph Replay 与 Nsight Kernel/API 证据 |
 
 模型级测试使用两个独立 GPT-2 实例：reference 对两个请求执行完整前缀前向，incremental
 逐 Token 写入分页 KV Cache。请求 0 执行长度 1--33；请求 1 在全局第 5 步加入，执行到
