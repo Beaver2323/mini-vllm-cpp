@@ -248,7 +248,7 @@ else
 endif
 
 # PHONY means these targets will always be executed
-.PHONY: all train_gpt2 test_gpt2 train_gpt2_cpp mini_vllm_demo mini_vllm_gpt2_demo benchmark_gpt2_serving benchmark_cuda_paged_attention benchmark_gpt2_cuda_serving test_minivllm_control_plane test_gpt2_paged_inference test_gpt2_engine test_cuda_paged_attention test_gpt2_cuda_model_runner train_gpt2cu test_gpt2cu train_gpt2fp32cu test_gpt2fp32cu profile_gpt2cu
+.PHONY: all train_gpt2 test_gpt2 train_gpt2_cpp mini_vllm_demo mini_vllm_gpt2_demo benchmark_gpt2_serving benchmark_cuda_paged_attention benchmark_gpt2_cuda_serving test_minivllm_control_plane test_gpt2_paged_inference test_gpt2_engine test_cuda_paged_attention test_gpt2_cuda_model_runner test_gpt2_cuda_prefix_cache train_gpt2cu test_gpt2cu train_gpt2fp32cu test_gpt2fp32cu profile_gpt2cu
 
 # Add targets
 TARGETS = train_gpt2 test_gpt2 train_gpt2_cpp
@@ -296,6 +296,9 @@ test_cuda_paged_attention: dev/cuda/test_paged_attention.cu mini_vllm/cuda/paged
 	$(NVCC) $(NVCC_FLAGS) $^ $(NVCC_INCLUDES) $(CUDA_OUTPUT_FILE)
 
 test_gpt2_cuda_model_runner: dev/cuda/test_gpt2_cuda_model_runner.cu mini_vllm/cuda/gpt2_cuda_model_runner.cu mini_vllm/cuda/paged_attention.cu
+	$(NVCC) $(NVCC_FLAGS) -Xcompiler -fopenmp $^ $(NVCC_INCLUDES) -lcublas -lgomp -lm $(CUDA_OUTPUT_FILE)
+
+test_gpt2_cuda_prefix_cache: dev/cuda/test_gpt2_cuda_prefix_cache.cu mini_vllm/cuda/gpt2_cuda_model_runner.cu mini_vllm/cuda/paged_attention.cu
 	$(NVCC) $(NVCC_FLAGS) -Xcompiler -fopenmp $^ $(NVCC_INCLUDES) -lcublas -lgomp -lm $(CUDA_OUTPUT_FILE)
 
 benchmark_cuda_paged_attention: benchmark/benchmark_cuda_paged_attention.cu mini_vllm/cuda/paged_attention.cu

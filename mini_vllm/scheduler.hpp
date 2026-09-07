@@ -94,6 +94,7 @@ public:
             const ScheduledItem& item = output.items[i];
             Sequence& sequence = *item.sequence;
             sequence.mark_computed(item.num_scheduled_tokens);
+            block_manager_.cache_computed_prefix_blocks(sequence);
             if (sequence.pending_tokens() != 0) {
                 if (sampled_token_ids[i] != -1) {
                     throw std::logic_error("partial prefill must not produce a sampled token");
@@ -121,6 +122,9 @@ public:
 private:
     bool try_schedule(const std::shared_ptr<Sequence>& sequence,
                       SchedulerOutput& output) {
+        if (sequence->status() == SequenceStatus::Waiting) {
+            block_manager_.apply_prefix_cache(*sequence);
+        }
         if (sequence->pending_tokens() == 0) {
             throw std::logic_error("sequence has no input token awaiting model execution");
         }

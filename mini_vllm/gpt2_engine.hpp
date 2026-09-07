@@ -29,8 +29,10 @@ class GPT2Engine {
 public:
     GPT2Engine(
         GPT2& model, std::size_t num_kv_blocks,
-        SchedulerConfig scheduler_config, std::size_t max_context_length)
-        : block_manager_(num_kv_blocks, PAGE_SIZE),
+        SchedulerConfig scheduler_config, std::size_t max_context_length,
+        bool enable_prefix_cache = false)
+        : block_manager_(
+              num_kv_blocks, PAGE_SIZE, enable_prefix_cache),
           scheduler_(scheduler_config, block_manager_),
           model_runner_(
               model, block_manager_, scheduler_config.max_num_sequences,
@@ -109,6 +111,12 @@ public:
         return block_manager_.num_free_blocks();
     }
     std::size_t num_blocks() const { return block_manager_.num_blocks(); }
+    std::size_t num_cached_blocks() const {
+        return block_manager_.num_cached_blocks();
+    }
+    std::size_t prefix_cache_hit_blocks() const {
+        return block_manager_.prefix_cache_hit_blocks();
+    }
 
     const GPT2ModelRunner& model_runner() const { return model_runner_; }
     const BlockManager& block_manager() const { return block_manager_; }

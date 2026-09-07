@@ -29,8 +29,11 @@ public:
         GPT2CudaConfig config, const float* host_parameters,
         std::size_t num_parameters, std::size_t num_kv_blocks,
         SchedulerConfig scheduler_config,
-        std::size_t max_context_length)
-        : block_manager_(num_kv_blocks, kPagedAttentionPageSize),
+        std::size_t max_context_length,
+        bool enable_prefix_cache = false)
+        : block_manager_(
+              num_kv_blocks, kPagedAttentionPageSize,
+              enable_prefix_cache),
           scheduler_(scheduler_config, block_manager_),
           model_runner_(
               config, host_parameters, num_parameters, block_manager_,
@@ -99,6 +102,12 @@ public:
         return block_manager_.num_free_blocks();
     }
     std::size_t num_blocks() const { return block_manager_.num_blocks(); }
+    std::size_t num_cached_blocks() const {
+        return block_manager_.num_cached_blocks();
+    }
+    std::size_t prefix_cache_hit_blocks() const {
+        return block_manager_.prefix_cache_hit_blocks();
+    }
     const GPT2CudaModelRunner& model_runner() const {
         return model_runner_;
     }

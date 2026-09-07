@@ -117,11 +117,63 @@ static void test_continuous_admission_and_retirement() {
     assert(manager.num_free_blocks() == manager.num_blocks());
 }
 
+static void test_prefix_cache_hit_and_lru_eviction() {
+    BlockManager manager(4, 4, /*enable_prefix_cache=*/true);
+    Scheduler scheduler({1, 16}, manager);
+
+    auto first = std::make_shared<Sequence>(
+        40, std::vector<int>{1, 2, 3, 4, 5, 6, 7, 8, 90},
+        SamplingParams{1, -1, false});
+    scheduler.add(first);
+    auto first_step = scheduler.schedule();
+    assert(first_step.items[0].num_scheduled_tokens == 9);
+    const std::vector<int> cached_block_ids = {
+        first->block_table()[0], first->block_table()[1]};
+    scheduler.commit(first_step, {900});
+    assert(first->is_finished());
+    assert(manager.num_cached_blocks() == 2);
+    assert(manager.num_free_blocks() == 2);
+
+    auto second = std::make_shared<Sequence>(
+        41, std::vector<int>{1, 2, 3, 4, 5, 6, 7, 8, 91},
+        SamplingParams{1, -1, false});
+    scheduler.add(second);
+    auto second_step = scheduler.schedule();
+    assert(second->num_computed_tokens() == 8);
+    assert(second_step.items[0].num_scheduled_tokens == 1);
+    assert(second_step.items[0].phase == ExecutionPhase::Prefill);
+    assert(second->block_table()[0] == cached_block_ids[0]);
+    assert(second->block_table()[1] == cached_block_ids[1]);
+    assert(manager.prefix_cache_hit_blocks() == 2);
+    scheduler.commit(second_step, {901});
+    assert(second->is_finished());
+
+    // 一个不共享前缀的 13 Token 请求需要 4 个 Block。空闲列表只有 2 个，
+    // BlockManager 必须按 LRU 驱逐两个只有 Cache 引用的 Block 后再原子分配。
+    auto pressure = request(42, 13, 1);
+    scheduler.add(pressure);
+    auto pressure_step = scheduler.schedule();
+    assert(pressure_step.items[0].num_scheduled_tokens == 13);
+    assert(manager.num_cached_blocks() == 0);
+    assert(manager.num_free_blocks() == 0);
+    scheduler.commit(pressure_step, {902});
+    assert(pressure->is_finished());
+    assert(manager.num_cached_blocks() == 3);
+    assert(manager.num_free_blocks() == 1);
+
+    manager.clear_prefix_cache();
+    assert(manager.num_cached_blocks() == 0);
+    assert(manager.num_free_blocks() == manager.num_blocks());
+    manager.validate();
+}
+
 int main() {
     test_block_allocation_release_and_reuse();
     test_chunked_prefill();
     test_oom_is_atomic_and_eos_releases_blocks();
     test_continuous_admission_and_retirement();
+    test_prefix_cache_hit_and_lru_eviction();
     std::cout << "mini-vLLM control-plane tests passed: block reuse, atomic OOM, EOS, "
-                 "chunked prefill, continuous admission/retirement\n";
+                 "chunked prefill, continuous admission/retirement, prefix cache, "
+                 "LRU eviction\n";
 }
