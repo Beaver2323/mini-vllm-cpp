@@ -248,7 +248,7 @@ else
 endif
 
 # PHONY means these targets will always be executed
-.PHONY: all train_gpt2 test_gpt2 train_gpt2_cpp mini_vllm_demo mini_vllm_gpt2_demo test_minivllm_control_plane test_gpt2_paged_inference test_gpt2_engine train_gpt2cu test_gpt2cu train_gpt2fp32cu test_gpt2fp32cu profile_gpt2cu
+.PHONY: all train_gpt2 test_gpt2 train_gpt2_cpp mini_vllm_demo mini_vllm_gpt2_demo benchmark_gpt2_serving test_minivllm_control_plane test_gpt2_paged_inference test_gpt2_engine train_gpt2cu test_gpt2cu train_gpt2fp32cu test_gpt2fp32cu profile_gpt2cu
 
 # Add targets
 TARGETS = train_gpt2 test_gpt2 train_gpt2_cpp
@@ -288,6 +288,9 @@ test_gpt2_paged_inference: dev/test_gpt2_paged_inference.cpp
 
 test_gpt2_engine: dev/test_gpt2_engine.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(LDFLAGS) $< $(LDLIBS) $(OUTPUT_FILE)
+
+benchmark_gpt2_serving: benchmark/benchmark_gpt2_serving.cpp
+	$(CXX) $(CXXFLAGS) -DMINI_VLLM_GIT_COMMIT=\"$(shell git rev-parse --short HEAD 2>/dev/null)\" $(INCLUDES) $(LDFLAGS) $< $(LDLIBS) $(OUTPUT_FILE)
 
 $(NVCC_CUDNN): llmc/cudnn_att.cpp
 	$(NVCC) -c $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_INCLUDES) -o $@

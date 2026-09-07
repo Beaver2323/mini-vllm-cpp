@@ -86,6 +86,158 @@ private:
     std::vector<float> attention_scratch_;
 };
 
+// 完整前缀重算基线使用的可变形状工作区。内存只按最大形状分配一次，
+// 正式计时中不会因前缀长度变化而反复 malloc。
+class GPT2DenseInferenceWorkspace {
+public:
+    GPT2DenseInferenceWorkspace(
+        GPT2Config config, int max_batch_size, int max_context_length)
+        : max_batch_size_(max_batch_size),
+          max_context_length_(max_context_length) {
+        if (max_batch_size <= 0 || max_context_length <= 0 ||
+            max_context_length > config.max_seq_len) {
+            throw std::invalid_argument(
+                "invalid dense inference workspace shape");
+        }
+        fill_in_activation_sizes(
+            act_sizes_, config, max_batch_size, max_context_length);
+        act_sizes_[21] = 0;  // greedy baseline does not need probabilities
+        act_sizes_[22] = 0;  // inference does not need losses
+        for (std::size_t size : act_sizes_) {
+            num_activations_ += size;
+        }
+        acts_memory_ =
+            malloc_and_point_activations(&acts_, act_sizes_);
+    }
+
+    ~GPT2DenseInferenceWorkspace() { free(acts_memory_); }
+
+    GPT2DenseInferenceWorkspace(
+        const GPT2DenseInferenceWorkspace&) = delete;
+    GPT2DenseInferenceWorkspace& operator=(
+        const GPT2DenseInferenceWorkspace&) = delete;
+
+    int max_batch_size() const { return max_batch_size_; }
+    int max_context_length() const { return max_context_length_; }
+    ActivationTensors& acts() { return acts_; }
+    const ActivationTensors& acts() const { return acts_; }
+    std::size_t num_activations() const { return num_activations_; }
+
+private:
+    int max_batch_size_;
+    int max_context_length_;
+    ActivationTensors acts_{};
+    std::size_t act_sizes_[NUM_ACTIVATION_TENSORS]{};
+    float* acts_memory_ = nullptr;
+    std::size_t num_activations_ = 0;
+};
+
+void gpt2_forward_dense_with_workspace(
+    const GPT2* model, const int* inputs, int batch_size,
+    int sequence_length, GPT2DenseInferenceWorkspace* workspace) {
+    if (model == nullptr || model->params_memory == nullptr ||
+        inputs == nullptr || workspace == nullptr) {
+        throw std::invalid_argument(
+            "dense inference received a null input");
+    }
+    if (batch_size <= 0 ||
+        batch_size > workspace->max_batch_size() ||
+        sequence_length <= 0 ||
+        sequence_length > workspace->max_context_length()) {
+        throw std::out_of_range(
+            "dense inference shape exceeds workspace capacity");
+    }
+
+    const std::size_t B = static_cast<std::size_t>(batch_size);
+    const std::size_t T = static_cast<std::size_t>(sequence_length);
+    const std::size_t L = model->config.num_layers;
+    const std::size_t NH = model->config.num_heads;
+    const std::size_t C = model->config.channels;
+    const std::size_t Vp = model->config.padded_vocab_size;
+    const std::size_t capacity_tokens =
+        static_cast<std::size_t>(workspace->max_batch_size()) *
+        workspace->max_context_length();
+    const std::size_t attention_layer_stride =
+        static_cast<std::size_t>(workspace->max_batch_size()) * NH *
+        workspace->max_context_length() *
+        workspace->max_context_length();
+
+    for (std::size_t i = 0; i < B * T; ++i) {
+        if (inputs[i] < 0 || inputs[i] >= model->config.vocab_size) {
+            throw std::out_of_range(
+                "dense inference token is outside the vocabulary");
+        }
+    }
+
+    ActivationTensors acts = workspace->acts();
+    ParameterTensors params = model->params;
+    encoder_forward(
+        acts.encoded, const_cast<int*>(inputs), params.wte, params.wpe,
+        B, T, C);
+
+    for (std::size_t l = 0; l < L; ++l) {
+        const std::size_t token_offset = l * capacity_tokens;
+        float* residual =
+            l == 0 ? acts.encoded
+                   : acts.residual3 + (l - 1) * capacity_tokens * C;
+        float* l_ln1 = acts.ln1 + token_offset * C;
+        float* l_ln1_mean = acts.ln1_mean + token_offset;
+        float* l_ln1_rstd = acts.ln1_rstd + token_offset;
+        float* l_qkv = acts.qkv + token_offset * 3 * C;
+        float* l_atty = acts.atty + token_offset * C;
+        float* l_preatt =
+            acts.preatt + l * attention_layer_stride;
+        float* l_att = acts.att + l * attention_layer_stride;
+        float* l_attproj = acts.attproj + token_offset * C;
+        float* l_residual2 = acts.residual2 + token_offset * C;
+        float* l_ln2 = acts.ln2 + token_offset * C;
+        float* l_ln2_mean = acts.ln2_mean + token_offset;
+        float* l_ln2_rstd = acts.ln2_rstd + token_offset;
+        float* l_fch = acts.fch + token_offset * 4 * C;
+        float* l_fch_gelu =
+            acts.fch_gelu + token_offset * 4 * C;
+        float* l_fcproj = acts.fcproj + token_offset * C;
+        float* l_residual3 = acts.residual3 + token_offset * C;
+
+        layernorm_forward(
+            l_ln1, l_ln1_mean, l_ln1_rstd, residual,
+            params.ln1w + l * C, params.ln1b + l * C,
+            B, T, C);
+        matmul_forward(
+            l_qkv, l_ln1, params.qkvw + l * 3 * C * C,
+            params.qkvb + l * 3 * C, B, T, C, 3 * C);
+        attention_forward(
+            l_atty, l_preatt, l_att, l_qkv, B, T, C, NH);
+        matmul_forward(
+            l_attproj, l_atty, params.attprojw + l * C * C,
+            params.attprojb + l * C, B, T, C, C);
+        residual_forward(
+            l_residual2, residual, l_attproj, B * T * C);
+        layernorm_forward(
+            l_ln2, l_ln2_mean, l_ln2_rstd, l_residual2,
+            params.ln2w + l * C, params.ln2b + l * C,
+            B, T, C);
+        matmul_forward(
+            l_fch, l_ln2, params.fcw + l * 4 * C * C,
+            params.fcb + l * 4 * C, B, T, C, 4 * C);
+        gelu_forward(l_fch_gelu, l_fch, B * T * 4 * C);
+        matmul_forward(
+            l_fcproj, l_fch_gelu, params.fcprojw + l * C * 4 * C,
+            params.fcprojb + l * C, B, T, 4 * C, C);
+        residual_forward(
+            l_residual3, l_residual2, l_fcproj, B * T * C);
+    }
+
+    float* final_residual =
+        acts.residual3 + (L - 1) * capacity_tokens * C;
+    layernorm_forward(
+        acts.lnf, acts.lnf_mean, acts.lnf_rstd, final_residual,
+        params.lnfw, params.lnfb, B, T, C);
+    matmul_forward(
+        acts.logits, acts.lnf, params.wte, nullptr,
+        B, T, C, Vp);
+}
+
 static void validate_paged_inference_inputs(
     const GPT2* model, const int* inputs, const KVCachePool* pool,
     const PageTable* page_table, int active_batch_size,

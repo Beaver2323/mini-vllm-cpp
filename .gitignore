@@ -27,6 +27,7 @@ test_gpt2_paged_inference
 test_gpt2_engine
 mini_vllm_demo
 mini_vllm_gpt2_demo
+benchmark_gpt2_serving
 dev/cuda/*_forward
 dev/cuda/*_backward
 dev/cuda/classifier_fused

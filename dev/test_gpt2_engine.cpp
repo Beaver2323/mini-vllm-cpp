@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -187,8 +188,33 @@ int main() {
         &model, reference_tokens.data(), nullptr,
         requests.size(), reference_length);
 
+    GPT2DenseInferenceWorkspace dense_workspace(
+        model.config, /*max_batch_size=*/1,
+        static_cast<int>(reference_length));
+    double dense_max_abs_error = 0.0;
     for (std::size_t b = 0; b < requests.size(); ++b) {
         const Sequence& sequence = *requests[b];
+        gpt2_forward_dense_with_workspace(
+            &model, sequence.token_ids().data(), 1,
+            static_cast<int>(sequence.num_tokens()), &dense_workspace);
+        for (std::size_t position = 0;
+             position < sequence.num_tokens(); ++position) {
+            const float* expected_logits =
+                model.acts.logits +
+                (b * reference_length + position) *
+                    model.config.padded_vocab_size;
+            const float* actual_logits =
+                dense_workspace.acts().logits +
+                position * model.config.padded_vocab_size;
+            for (int token_id = 0;
+                 token_id < model.config.vocab_size; ++token_id) {
+                dense_max_abs_error = std::max(
+                    dense_max_abs_error,
+                    std::abs(
+                        static_cast<double>(actual_logits[token_id]) -
+                        expected_logits[token_id]));
+            }
+        }
         for (std::size_t generated_index = sequence.num_prompt_tokens();
              generated_index < sequence.num_tokens(); ++generated_index) {
             const std::size_t logit_position = generated_index - 1;
@@ -201,6 +227,7 @@ int main() {
             assert(sequence.token_ids()[generated_index] == expected);
         }
     }
+    assert(dense_max_abs_error < 2e-3);
 
     assert(inference_activations < model.num_activations);
     std::cout
@@ -208,6 +235,7 @@ int main() {
            "block reuse, full-prefix greedy agreement\n"
         << "inference_workspace_activations=" << inference_activations
         << " reference_activations=" << model.num_activations << '\n'
+        << "dense_workspace_max_abs_error=" << dense_max_abs_error << '\n'
         << "request_lengths=" << request1->num_tokens() << ','
         << request2->num_tokens() << ',' << request3->num_tokens()
         << " free_blocks=" << engine.num_free_blocks() << '\n';
