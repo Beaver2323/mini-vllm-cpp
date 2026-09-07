@@ -122,34 +122,15 @@ double percentile(std::vector<double> values, double fraction) {
 }
 
 RunResult run_once(
-    GPT2& model, std::size_t token_budget, CudaDataType data_type,
-    bool enable_fusion, bool enable_cuda_graph) {
-    constexpr std::size_t max_num_sequences = 4;
-    constexpr std::size_t max_context_length = 64;
+    GPT2CudaEngine& engine, std::uint64_t first_request_id) {
     constexpr std::size_t max_new_tokens = 4;
-    const GPT2CudaConfig config{
-        model.config.max_seq_len,
-        model.config.vocab_size,
-        model.config.padded_vocab_size,
-        model.config.num_layers,
-        model.config.num_heads,
-        model.config.channels,
-        data_type,
-        enable_fusion,
-        enable_cuda_graph,
-    };
-    GPT2CudaEngine engine(
-        config, model.params_memory, model.num_parameters,
-        /*num_kv_blocks=*/16,
-        {/*max_num_sequences=*/max_num_sequences,
-         /*max_num_batched_tokens=*/token_budget},
-        max_context_length);
 
     const std::vector<std::size_t> prompt_lengths = {8, 16, 24, 32};
     std::vector<std::shared_ptr<Sequence>> requests;
     for (std::size_t index = 0; index < prompt_lengths.size(); ++index) {
         requests.push_back(engine.add_request(
-            index + 1, make_prompt(prompt_lengths[index], index + 1),
+            first_request_id + index,
+            make_prompt(prompt_lengths[index], index + 1),
             SamplingParams{max_new_tokens, -1, false}));
     }
 
@@ -163,8 +144,11 @@ RunResult run_once(
             engine.model_runner().last_host_to_device_bytes();
         for (std::size_t index = 0; index < step.request_ids.size(); ++index) {
             if (step.sampled_token_ids[index] < 0) continue;
-            const std::size_t request_index =
-                static_cast<std::size_t>(step.request_ids[index] - 1);
+            if (step.request_ids[index] < first_request_id) {
+                throw std::logic_error("unexpected CUDA benchmark request id");
+            }
+            const std::size_t request_index = static_cast<std::size_t>(
+                step.request_ids[index] - first_request_id);
             token_times.at(request_index).push_back(
                 elapsed_ms(start, now));
         }
@@ -400,9 +384,26 @@ int main(int argc, char** argv) {
         gpt2_build_from_checkpoint(&model, "gpt2_124M.bin");
         const std::vector<std::vector<int>> expected_tokens =
             cpu_greedy_reference(model);
-        const RunResult warmup = run_once(
-            model, options.token_budget, options.data_type,
-            options.enable_fusion, options.enable_cuda_graph);
+        constexpr std::size_t max_num_sequences = 4;
+        constexpr std::size_t max_context_length = 64;
+        const GPT2CudaConfig config{
+            model.config.max_seq_len,
+            model.config.vocab_size,
+            model.config.padded_vocab_size,
+            model.config.num_layers,
+            model.config.num_heads,
+            model.config.channels,
+            options.data_type,
+            options.enable_fusion,
+            options.enable_cuda_graph,
+        };
+        GPT2CudaEngine engine(
+            config, model.params_memory, model.num_parameters,
+            /*num_kv_blocks=*/16,
+            {/*max_num_sequences=*/max_num_sequences,
+             /*max_num_batched_tokens=*/options.token_budget},
+            max_context_length);
+        const RunResult warmup = run_once(engine, 1000);
         if (warmup.generated_tokens != expected_tokens) {
             throw std::runtime_error(
                 "CUDA warmup tokens differ from CPU full-prefix reference");
@@ -410,8 +411,7 @@ int main(int argc, char** argv) {
         std::vector<RunResult> runs;
         for (int repeat = 0; repeat < options.repeats; ++repeat) {
             RunResult run = run_once(
-                model, options.token_budget, options.data_type,
-                options.enable_fusion, options.enable_cuda_graph);
+                engine, 2000 + static_cast<std::uint64_t>(repeat) * 10);
             if (run.generated_tokens != warmup.generated_tokens) {
                 throw std::runtime_error(
                     "CUDA benchmark generated tokens changed across runs");
