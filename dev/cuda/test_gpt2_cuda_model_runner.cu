@@ -9,9 +9,12 @@
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 using namespace mini_vllm;
+using mini_vllm::cuda::CudaDataType;
 using mini_vllm::cuda::GPT2CudaConfig;
 using mini_vllm::cuda::GPT2CudaModelRunner;
 
@@ -33,6 +36,7 @@ static int argmax(const float* logits, int vocab_size) {
 struct StepValidation {
     double max_abs_logit_error = 0.0;
     std::size_t expected_metadata_bytes = 0;
+    std::size_t argmax_mismatches = 0;
 };
 
 static StepValidation validate_and_commit(
@@ -82,8 +86,10 @@ static StepValidation validate_and_commit(
                 std::abs(static_cast<double>(actual[token_id]) -
                          expected[token_id]));
         }
-        assert(argmax(actual, model.config.vocab_size) ==
-               argmax(expected, model.config.vocab_size));
+        if (argmax(actual, model.config.vocab_size) !=
+            argmax(expected, model.config.vocab_size)) {
+            ++validation.argmax_mismatches;
+        }
     }
 
     for (std::size_t item_index = 0; item_index < output.items.size();
@@ -98,15 +104,34 @@ static StepValidation validate_and_commit(
             reference_workspace.acts().logits +
             (sequence.num_tokens() - 1) *
                 model.config.padded_vocab_size;
-        assert(sampled[item_index] ==
-               argmax(expected, model.config.vocab_size));
+        if (sampled[item_index] !=
+            argmax(expected, model.config.vocab_size)) {
+            ++validation.argmax_mismatches;
+        }
     }
 
     scheduler.commit(output, sampled);
     return validation;
 }
 
-int main() {
+int main(int argc, char** argv) {
+    CudaDataType data_type = CudaDataType::FP32;
+    if (argc == 3 && std::string(argv[1]) == "--precision") {
+        const std::string precision = argv[2];
+        if (precision == "fp16") {
+            data_type = CudaDataType::FP16;
+        } else if (precision == "bf16") {
+            data_type = CudaDataType::BF16;
+        } else if (precision != "fp32") {
+            throw std::invalid_argument(
+                "precision must be fp32, fp16, or bf16");
+        }
+    } else if (argc != 1) {
+        throw std::invalid_argument(
+            "usage: test_gpt2_cuda_model_runner "
+            "[--precision fp32|fp16|bf16]");
+    }
+
     GPT2 model{};
     gpt2_build_from_checkpoint(&model, "gpt2_124M.bin");
 
@@ -125,6 +150,7 @@ int main() {
         model.config.num_layers,
         model.config.num_heads,
         model.config.channels,
+        data_type,
     };
     GPT2CudaModelRunner runner(
         cuda_config, model.params_memory, model.num_parameters,
@@ -146,6 +172,7 @@ int main() {
     scheduler.add(request1);
     double global_max_abs_logit_error = 0.0;
     std::size_t total_metadata_bytes = 0;
+    std::size_t total_argmax_mismatches = 0;
     bool saw_mixed_batch = false;
     bool saw_reused_block = false;
     int step = 0;
@@ -176,6 +203,7 @@ int main() {
             global_max_abs_logit_error,
             validation.max_abs_logit_error);
         total_metadata_bytes += validation.expected_metadata_bytes;
+        total_argmax_mismatches += validation.argmax_mismatches;
     }
 
     assert(request1->is_finished());
@@ -184,12 +212,19 @@ int main() {
     assert(saw_mixed_batch);
     assert(saw_reused_block);
     assert(block_manager.num_free_blocks() == block_manager.num_blocks());
-    assert(global_max_abs_logit_error < 0.2);
+    assert(global_max_abs_logit_error <
+           (data_type == CudaDataType::FP32 ? 0.2 : 3.0));
+    if (data_type != CudaDataType::BF16) {
+        assert(total_argmax_mismatches == 0);
+    }
 
     std::cout
-        << "CUDA GPT2ModelRunner test passed: full GPU decode, mixed batch, "
-           "cross-page growth, block reuse, CPU greedy agreement\n"
+        << "CUDA GPT2ModelRunner test passed: precision="
+        << (data_type == CudaDataType::FP16 ? "fp16" :
+            (data_type == CudaDataType::BF16 ? "bf16" : "fp32"))
+        << ", full GPU decode, mixed batch, cross-page growth, block reuse\n"
         << "max_abs_logit_error=" << global_max_abs_logit_error << '\n'
+        << "argmax_mismatches=" << total_argmax_mismatches << '\n'
         << "weight_bytes=" << runner.weight_bytes()
         << " kv_cache_bytes=" << runner.kv_cache_bytes()
         << " activation_bytes=" << runner.activation_bytes()

@@ -10,6 +10,12 @@
 namespace mini_vllm {
 namespace cuda {
 
+enum class CudaDataType {
+    FP32,
+    FP16,
+    BF16,
+};
+
 struct GPT2CudaConfig {
     int max_seq_len = 0;
     int vocab_size = 0;
@@ -17,6 +23,7 @@ struct GPT2CudaConfig {
     int num_layers = 0;
     int num_heads = 0;
     int channels = 0;
+    CudaDataType data_type = CudaDataType::FP32;
 };
 
 class GPT2CudaModelRunner {
@@ -40,6 +47,7 @@ public:
     std::size_t weight_bytes() const;
     std::size_t kv_cache_bytes() const;
     std::size_t activation_bytes() const;
+    CudaDataType data_type() const;
 
 private:
     class Impl;

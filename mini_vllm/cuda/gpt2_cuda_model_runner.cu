@@ -2,6 +2,8 @@
 #include "paged_attention.cuh"
 
 #include <cublas_v2.h>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -11,6 +13,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -20,6 +23,18 @@ namespace {
 
 constexpr int kThreads = 256;
 constexpr int kParameterTensorCount = 16;
+
+std::size_t storage_element_size(CudaDataType data_type) {
+    switch (data_type) {
+    case CudaDataType::FP32:
+        return sizeof(float);
+    case CudaDataType::FP16:
+        return sizeof(__half);
+    case CudaDataType::BF16:
+        return sizeof(__nv_bfloat16);
+    }
+    throw std::invalid_argument("unsupported CUDA data type");
+}
 
 void check_cuda(cudaError_t error, const char* operation) {
     if (error != cudaSuccess) {
@@ -62,6 +77,49 @@ private:
     std::size_t count_ = 0;
 };
 
+class DeviceTensorBuffer {
+public:
+    DeviceTensorBuffer(std::size_t count, std::size_t element_size)
+        : count_(count), element_size_(element_size) {
+        if (count == 0 || (element_size != sizeof(float) &&
+                          element_size != sizeof(__half))) {
+            throw std::invalid_argument("invalid CUDA tensor buffer");
+        }
+        check_cuda(cudaMalloc(&pointer_, bytes()), "cudaMalloc tensor");
+    }
+
+    ~DeviceTensorBuffer() {
+        if (pointer_ != nullptr) cudaFree(pointer_);
+    }
+
+    DeviceTensorBuffer(const DeviceTensorBuffer&) = delete;
+    DeviceTensorBuffer& operator=(const DeviceTensorBuffer&) = delete;
+
+    template <typename T>
+    T* get() {
+        if (sizeof(T) != element_size_) {
+            throw std::logic_error("CUDA tensor type does not match storage");
+        }
+        return static_cast<T*>(pointer_);
+    }
+
+    template <typename T>
+    const T* get() const {
+        if (sizeof(T) != element_size_) {
+            throw std::logic_error("CUDA tensor type does not match storage");
+        }
+        return static_cast<const T*>(pointer_);
+    }
+
+    void* data() { return pointer_; }
+    std::size_t bytes() const { return count_ * element_size_; }
+
+private:
+    void* pointer_ = nullptr;
+    std::size_t count_ = 0;
+    std::size_t element_size_ = 0;
+};
+
 class CudaStream {
 public:
     CudaStream() {
@@ -80,11 +138,14 @@ private:
 
 class CublasHandle {
 public:
-    explicit CublasHandle(cudaStream_t stream) {
+    CublasHandle(cudaStream_t stream, CudaDataType data_type) {
         check_cublas(cublasCreate(&handle_), "cublasCreate");
         check_cublas(cublasSetStream(handle_, stream), "cublasSetStream");
         check_cublas(
-            cublasSetMathMode(handle_, CUBLAS_PEDANTIC_MATH),
+            cublasSetMathMode(
+                handle_, data_type != CudaDataType::FP32
+                    ? CUBLAS_DEFAULT_MATH
+                    : CUBLAS_PEDANTIC_MATH),
             "cublasSetMathMode");
     }
     ~CublasHandle() {
@@ -96,23 +157,24 @@ private:
     cublasHandle_t handle_ = nullptr;
 };
 
+template <typename T>
 struct ParameterViews {
-    const float* wte = nullptr;
-    const float* wpe = nullptr;
-    const float* ln1w = nullptr;
-    const float* ln1b = nullptr;
-    const float* qkvw = nullptr;
-    const float* qkvb = nullptr;
-    const float* attprojw = nullptr;
-    const float* attprojb = nullptr;
-    const float* ln2w = nullptr;
-    const float* ln2b = nullptr;
-    const float* fcw = nullptr;
-    const float* fcb = nullptr;
-    const float* fcprojw = nullptr;
-    const float* fcprojb = nullptr;
-    const float* lnfw = nullptr;
-    const float* lnfb = nullptr;
+    const T* wte = nullptr;
+    const T* wpe = nullptr;
+    const T* ln1w = nullptr;
+    const T* ln1b = nullptr;
+    const T* qkvw = nullptr;
+    const T* qkvb = nullptr;
+    const T* attprojw = nullptr;
+    const T* attprojb = nullptr;
+    const T* ln2w = nullptr;
+    const T* ln2b = nullptr;
+    const T* fcw = nullptr;
+    const T* fcb = nullptr;
+    const T* fcprojw = nullptr;
+    const T* fcprojb = nullptr;
+    const T* lnfw = nullptr;
+    const T* lnfb = nullptr;
 };
 
 std::vector<std::size_t> parameter_sizes(const GPT2CudaConfig& config) {
@@ -146,6 +208,7 @@ GPT2CudaConfig validate_runner_arguments(
         config.channels % config.num_heads != 0) {
         throw std::invalid_argument("invalid CUDA GPT-2 config");
     }
+    storage_element_size(config.data_type);
     if (host_parameters == nullptr ||
         supplied_parameters != parameter_count(config)) {
         throw std::invalid_argument(
@@ -164,18 +227,19 @@ GPT2CudaConfig validate_runner_arguments(
     return config;
 }
 
-ParameterViews point_parameters(
-    const float* base, const std::vector<std::size_t>& sizes) {
+template <typename T>
+ParameterViews<T> point_parameters(
+    const T* base, const std::vector<std::size_t>& sizes) {
     if (sizes.size() != kParameterTensorCount) {
         throw std::logic_error("invalid GPT-2 parameter size table");
     }
-    const float* cursor = base;
+    const T* cursor = base;
     auto take = [&](std::size_t index) {
-        const float* result = cursor;
+        const T* result = cursor;
         cursor += sizes[index];
         return result;
     };
-    ParameterViews views;
+    ParameterViews<T> views;
     views.wte = take(0);
     views.wpe = take(1);
     views.ln1w = take(2);
@@ -195,34 +259,80 @@ ParameterViews point_parameters(
     return views;
 }
 
+template <typename T>
+__device__ __forceinline__ float to_float(T value) {
+    return static_cast<float>(value);
+}
+
+template <>
+__device__ __forceinline__ float to_float(__half value) {
+    return __half2float(value);
+}
+
+template <>
+__device__ __forceinline__ float to_float(__nv_bfloat16 value) {
+    return __bfloat162float(value);
+}
+
+template <typename T>
+__device__ __forceinline__ T from_float(float value) {
+    return static_cast<T>(value);
+}
+
+template <>
+__device__ __forceinline__ __half from_float(float value) {
+    return __float2half_rn(value);
+}
+
+template <>
+__device__ __forceinline__ __nv_bfloat16 from_float(float value) {
+    return __float2bfloat16_rn(value);
+}
+
+__global__ void float_to_half_kernel(
+    __half* output, const float* input, std::size_t count) {
+    const std::size_t index =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index < count) output[index] = __float2half_rn(input[index]);
+}
+
+__global__ void float_to_bfloat16_kernel(
+    __nv_bfloat16* output, const float* input, std::size_t count) {
+    const std::size_t index =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index < count) output[index] = __float2bfloat16_rn(input[index]);
+}
+
+template <typename T>
 __global__ void embedding_kernel(
-    float* output, const int* token_ids, const int* positions,
-    const float* token_embeddings, const float* position_embeddings,
+    T* output, const int* token_ids, const int* positions,
+    const T* token_embeddings, const T* position_embeddings,
     int batch_size, int channels) {
     const int index = blockIdx.x * blockDim.x + threadIdx.x;
     const int count = batch_size * channels;
     if (index >= count) return;
     const int row = index / channels;
     const int channel = index % channels;
-    output[index] =
-        token_embeddings[token_ids[row] * channels + channel] +
-        position_embeddings[positions[row] * channels + channel];
+    output[index] = from_float<T>(
+        to_float(token_embeddings[token_ids[row] * channels + channel]) +
+        to_float(position_embeddings[positions[row] * channels + channel]));
 }
 
+template <typename T>
 __global__ void layernorm_kernel(
-    float* output, const float* input, const float* weight,
-    const float* bias, int batch_size, int channels) {
+    T* output, const T* input, const T* weight,
+    const T* bias, int batch_size, int channels) {
     const int row = blockIdx.x;
     const int thread = threadIdx.x;
     if (row >= batch_size) return;
     __shared__ float reduction[kThreads];
 
-    const float* row_input = input +
+    const T* row_input = input +
         static_cast<std::size_t>(row) * channels;
     float local_sum = 0.0f;
     for (int channel = thread; channel < channels;
          channel += blockDim.x) {
-        local_sum += row_input[channel];
+        local_sum += to_float(row_input[channel]);
     }
     reduction[thread] = local_sum;
     __syncthreads();
@@ -236,7 +346,7 @@ __global__ void layernorm_kernel(
     float local_variance = 0.0f;
     for (int channel = thread; channel < channels;
          channel += blockDim.x) {
-        const float shifted = row_input[channel] - mean;
+        const float shifted = to_float(row_input[channel]) - mean;
         local_variance += shifted * shifted;
     }
     reduction[thread] = local_variance;
@@ -249,25 +359,43 @@ __global__ void layernorm_kernel(
         rsqrtf(reduction[0] / channels + 1e-5f);
     __syncthreads();
 
-    float* row_output = output +
+    T* row_output = output +
         static_cast<std::size_t>(row) * channels;
     for (int channel = thread; channel < channels;
          channel += blockDim.x) {
-        row_output[channel] =
-            (row_input[channel] - mean) * inverse_stddev * weight[channel] +
-            bias[channel];
+        row_output[channel] = from_float<T>(
+            (to_float(row_input[channel]) - mean) * inverse_stddev *
+                to_float(weight[channel]) +
+            to_float(bias[channel]));
     }
 }
 
+template <typename T>
 __global__ void add_bias_kernel(
-    float* output, const float* bias, int batch_size, int width) {
+    T* output, const T* bias, int batch_size, int width) {
     const int index = blockIdx.x * blockDim.x + threadIdx.x;
     const int count = batch_size * width;
-    if (index < count) output[index] += bias[index % width];
+    if (index < count) {
+        output[index] = from_float<T>(
+            to_float(output[index]) + to_float(bias[index % width]));
+    }
 }
 
+__global__ void add_bias_half2_kernel(
+    __half* output, const __half* bias, int batch_size, int width) {
+    const int pair = blockIdx.x * blockDim.x + threadIdx.x;
+    const int pair_width = width / 2;
+    const int count = batch_size * pair_width;
+    if (pair < count) {
+        reinterpret_cast<__half2*>(output)[pair] = __hadd2(
+            reinterpret_cast<__half2*>(output)[pair],
+            reinterpret_cast<const __half2*>(bias)[pair % pair_width]);
+    }
+}
+
+template <typename T>
 __global__ void split_qkv_kernel(
-    const float* qkv, float* query, float* key, float* value,
+    const T* qkv, T* query, T* key, T* value,
     int batch_size, int channels) {
     const int index = blockIdx.x * blockDim.x + threadIdx.x;
     const int count = batch_size * channels;
@@ -281,20 +409,50 @@ __global__ void split_qkv_kernel(
     value[index] = qkv[source + 2 * channels];
 }
 
+template <typename T>
 __global__ void residual_kernel(
-    float* output, const float* left, const float* right, int count) {
+    T* output, const T* left, const T* right, int count) {
     const int index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (index < count) output[index] = left[index] + right[index];
+    if (index < count) {
+        output[index] =
+            from_float<T>(to_float(left[index]) + to_float(right[index]));
+    }
 }
 
-__global__ void gelu_kernel(float* values, int count) {
+__global__ void residual_half2_kernel(
+    __half* output, const __half* left, const __half* right, int count) {
+    const int pair = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pair < count / 2) {
+        reinterpret_cast<__half2*>(output)[pair] = __hadd2(
+            reinterpret_cast<const __half2*>(left)[pair],
+            reinterpret_cast<const __half2*>(right)[pair]);
+    }
+}
+
+template <typename T>
+__global__ void gelu_kernel(T* values, int count) {
     const int index = blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= count) return;
-    const float value = values[index];
+    const float value = to_float(values[index]);
     const float cube = 0.044715f * value * value * value;
-    values[index] =
+    values[index] = from_float<T>(
         0.5f * value *
-        (1.0f + tanhf(0.7978845608028654f * (value + cube)));
+        (1.0f + tanhf(0.7978845608028654f * (value + cube))));
+}
+
+__global__ void gelu_half2_kernel(__half* values, int count) {
+    const int pair = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pair >= count / 2) return;
+    const float2 input =
+        __half22float2(reinterpret_cast<__half2*>(values)[pair]);
+    const float cube_x = 0.044715f * input.x * input.x * input.x;
+    const float cube_y = 0.044715f * input.y * input.y * input.y;
+    const float output_x = 0.5f * input.x *
+        (1.0f + tanhf(0.7978845608028654f * (input.x + cube_x)));
+    const float output_y = 0.5f * input.y *
+        (1.0f + tanhf(0.7978845608028654f * (input.y + cube_y)));
+    reinterpret_cast<__half2*>(values)[pair] =
+        __floats2half2_rn(output_x, output_y);
 }
 
 __global__ void argmax_kernel(
@@ -375,8 +533,8 @@ public:
           parameter_sizes_(parameter_sizes(config_)),
           num_parameters_(sum(parameter_sizes_)),
           stream_(),
-          cublas_(stream_.get()),
-          parameters_(num_parameters_),
+          cublas_(stream_.get(), config_.data_type),
+          parameters_(num_parameters_, storage_size()),
           token_ids_(max_num_tokens_),
           positions_(max_num_tokens_),
           context_lengths_(max_num_tokens_),
@@ -385,39 +543,33 @@ public:
               static_cast<std::size_t>(max_num_tokens_) *
               max_blocks_per_sequence_),
           sampled_token_ids_(max_num_tokens_),
-          key_cache_(cache_elements()),
-          value_cache_(cache_elements()),
-          residual_a_(batch_channels()),
-          residual_b_(batch_channels()),
-          normalized_(batch_channels()),
+          key_cache_(cache_elements(), storage_size()),
+          value_cache_(cache_elements(), storage_size()),
+          residual_a_(batch_channels(), storage_size()),
+          residual_b_(batch_channels(), storage_size()),
+          normalized_(batch_channels(), storage_size()),
           qkv_(static_cast<std::size_t>(max_num_tokens_) *
-               3 * config_.channels),
-          query_(batch_channels()),
-          key_(batch_channels()),
-          value_(batch_channels()),
-          attention_(batch_channels()),
-          projected_(batch_channels()),
+               3 * config_.channels, storage_size()),
+          query_(batch_channels(), storage_size()),
+          key_(batch_channels(), storage_size()),
+          value_(batch_channels(), storage_size()),
+          attention_(batch_channels(), storage_size()),
+          projected_(batch_channels(), storage_size()),
           hidden_(static_cast<std::size_t>(max_num_tokens_) *
-                  4 * config_.channels),
+                  4 * config_.channels, storage_size()),
           logits_(static_cast<std::size_t>(max_num_tokens_) *
                   config_.padded_vocab_size) {
-        check_cuda(
-            cudaMemcpyAsync(
-                parameters_.get(), host_parameters, parameters_.bytes(),
-                cudaMemcpyHostToDevice, stream_.get()),
-            "copy GPT-2 weights to GPU");
+        initialize_parameters(host_parameters);
         check_cuda(
             cudaMemsetAsync(
-                key_cache_.get(), 0, key_cache_.bytes(), stream_.get()),
+                key_cache_.data(), 0, key_cache_.bytes(), stream_.get()),
             "initialize key cache");
         check_cuda(
             cudaMemsetAsync(
-                value_cache_.get(), 0, value_cache_.bytes(), stream_.get()),
+                value_cache_.data(), 0, value_cache_.bytes(), stream_.get()),
             "initialize value cache");
         check_cuda(cudaStreamSynchronize(stream_.get()),
                    "finish CUDA ModelRunner initialization");
-        parameters_view_ =
-            point_parameters(parameters_.get(), parameter_sizes_);
     }
 
     std::vector<int> run(const SchedulerOutput& output) {
@@ -442,7 +594,12 @@ public:
         ModelInput input = prepare_packed_model_input(
             output, block_manager_, max_context_length_,
             max_blocks_per_sequence_, num_pages_);
-        const std::vector<int> token_samples = forward(input);
+        const std::vector<int> token_samples =
+            config_.data_type == CudaDataType::FP16
+                ? forward<__half>(input)
+                : (config_.data_type == CudaDataType::BF16
+                    ? forward<__nv_bfloat16>(input)
+                    : forward<float>(input));
         for (std::size_t item_index = 0;
              item_index < output.items.size(); ++item_index) {
             const ScheduledItem& item = output.items[item_index];
@@ -488,6 +645,7 @@ public:
             key_.bytes() + value_.bytes() + attention_.bytes() +
             projected_.bytes() + hidden_.bytes() + logits_.bytes();
     }
+    CudaDataType data_type() const { return config_.data_type; }
 
 private:
     static std::size_t sum(const std::vector<std::size_t>& values) {
@@ -500,33 +658,122 @@ private:
         return static_cast<std::size_t>(max_num_tokens_) * config_.channels;
     }
 
+    std::size_t storage_size() const {
+        return storage_element_size(config_.data_type);
+    }
+
+    void initialize_parameters(const float* host_parameters) {
+        if (config_.data_type == CudaDataType::FP32) {
+            check_cuda(
+                cudaMemcpyAsync(
+                    parameters_.get<float>(), host_parameters,
+                    parameters_.bytes(), cudaMemcpyHostToDevice,
+                    stream_.get()),
+                "copy FP32 GPT-2 weights to GPU");
+            return;
+        }
+
+        DeviceBuffer<float> fp32_parameters(num_parameters_);
+        check_cuda(
+            cudaMemcpyAsync(
+                fp32_parameters.get(), host_parameters,
+                fp32_parameters.bytes(), cudaMemcpyHostToDevice,
+                stream_.get()),
+            "copy GPT-2 weights before FP16 conversion");
+        if (config_.data_type == CudaDataType::FP16) {
+            float_to_half_kernel<<<
+                blocks_for(static_cast<int>(num_parameters_)), kThreads, 0,
+                stream_.get()>>>(
+                parameters_.get<__half>(), fp32_parameters.get(),
+                num_parameters_);
+            check_last_kernel("convert GPT-2 weights to FP16");
+        } else {
+            float_to_bfloat16_kernel<<<
+                blocks_for(static_cast<int>(num_parameters_)), kThreads, 0,
+                stream_.get()>>>(
+                parameters_.get<__nv_bfloat16>(), fp32_parameters.get(),
+                num_parameters_);
+            check_last_kernel("convert GPT-2 weights to BF16");
+        }
+        check_cuda(
+            cudaStreamSynchronize(stream_.get()),
+            "finish reduced-precision weight conversion");
+    }
+
     std::size_t cache_elements() const {
         return static_cast<std::size_t>(num_pages_) * config_.num_layers *
             config_.num_heads * kPagedAttentionPageSize *
             (config_.channels / config_.num_heads);
     }
 
+    template <typename T>
     void matmul(
-        float* output, const float* input, const float* weight,
-        const float* bias, int batch_size, int input_width,
+        T* output, const T* input, const T* weight,
+        const T* bias, int batch_size, int input_width,
         int output_width) {
         const float alpha = 1.0f;
         const float beta = 0.0f;
-        check_cublas(
-            cublasSgemm(
+        if constexpr (std::is_same<T, float>::value) {
+            check_cublas(cublasSgemm(
                 cublas_.get(), CUBLAS_OP_T, CUBLAS_OP_N,
                 output_width, batch_size, input_width, &alpha,
                 weight, input_width, input, input_width, &beta,
-                output, output_width),
-            "cublasSgemm");
+                output, output_width), "cublasSgemm");
+        } else {
+            constexpr cudaDataType_t storage_type =
+                std::is_same<T, __half>::value ? CUDA_R_16F : CUDA_R_16BF;
+            check_cublas(cublasGemmEx(
+                cublas_.get(), CUBLAS_OP_T, CUBLAS_OP_N,
+                output_width, batch_size, input_width, &alpha,
+                weight, storage_type, input_width,
+                input, storage_type, input_width, &beta,
+                output, storage_type, output_width,
+                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP),
+                "cublasGemmEx FP16 Tensor Core");
+        }
         if (bias != nullptr) {
-            add_bias_kernel<<<
-                blocks_for(batch_size * output_width), kThreads, 0,
-                stream_.get()>>>(output, bias, batch_size, output_width);
+            if constexpr (std::is_same<T, __half>::value) {
+                add_bias_half2_kernel<<<
+                    blocks_for(batch_size * output_width / 2), kThreads, 0,
+                    stream_.get()>>>(
+                    output, bias, batch_size, output_width);
+            } else {
+                add_bias_kernel<T><<<
+                    blocks_for(batch_size * output_width), kThreads, 0,
+                    stream_.get()>>>(
+                    output, bias, batch_size, output_width);
+            }
             check_last_kernel("add_bias_kernel");
         }
     }
 
+    template <typename T>
+    void logits_matmul(
+        const T* input, const T* weight, int batch_size, int input_width,
+        int output_width) {
+        const float alpha = 1.0f;
+        const float beta = 0.0f;
+        if constexpr (std::is_same<T, float>::value) {
+            check_cublas(cublasSgemm(
+                cublas_.get(), CUBLAS_OP_T, CUBLAS_OP_N,
+                output_width, batch_size, input_width, &alpha,
+                weight, input_width, input, input_width, &beta,
+                logits_.get(), output_width), "cublasSgemm logits");
+        } else {
+            constexpr cudaDataType_t storage_type =
+                std::is_same<T, __half>::value ? CUDA_R_16F : CUDA_R_16BF;
+            check_cublas(cublasGemmEx(
+                cublas_.get(), CUBLAS_OP_T, CUBLAS_OP_N,
+                output_width, batch_size, input_width, &alpha,
+                weight, storage_type, input_width,
+                input, storage_type, input_width, &beta,
+                logits_.get(), CUDA_R_32F, output_width,
+                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP),
+                "cublasGemmEx FP16 logits");
+        }
+    }
+
+    template <typename T>
     std::vector<int> forward(const ModelInput& input) {
         const int batch_size = model_input_checked_int(
             input.batch_size(), "CUDA packed batch is too large");
@@ -552,42 +799,44 @@ private:
         const int channels = config_.channels;
         const int hidden_width = 4 * channels;
         const int channel_elements = batch_size * channels;
-        embedding_kernel<<<
+        const ParameterViews<T> parameters_view =
+            point_parameters(parameters_.get<T>(), parameter_sizes_);
+        embedding_kernel<T><<<
             blocks_for(channel_elements), kThreads, 0, stream_.get()>>>(
-            residual_a_.get(), token_ids_.get(), positions_.get(),
-            parameters_view_.wte, parameters_view_.wpe,
+            residual_a_.get<T>(), token_ids_.get(), positions_.get(),
+            parameters_view.wte, parameters_view.wpe,
             batch_size, channels);
         check_last_kernel("embedding_kernel");
 
         for (int layer = 0; layer < config_.num_layers; ++layer) {
-            layernorm_kernel<<<batch_size, kThreads, 0, stream_.get()>>>(
-                normalized_.get(), residual_a_.get(),
-                parameters_view_.ln1w +
+            layernorm_kernel<T><<<batch_size, kThreads, 0, stream_.get()>>>(
+                normalized_.get<T>(), residual_a_.get<T>(),
+                parameters_view.ln1w +
                     static_cast<std::size_t>(layer) * channels,
-                parameters_view_.ln1b +
+                parameters_view.ln1b +
                     static_cast<std::size_t>(layer) * channels,
                 batch_size, channels);
             check_last_kernel("layernorm ln1");
 
             matmul(
-                qkv_.get(), normalized_.get(),
-                parameters_view_.qkvw +
+                qkv_.get<T>(), normalized_.get<T>(),
+                parameters_view.qkvw +
                     static_cast<std::size_t>(layer) * 3 * channels * channels,
-                parameters_view_.qkvb +
+                parameters_view.qkvb +
                     static_cast<std::size_t>(layer) * 3 * channels,
                 batch_size, channels, 3 * channels);
-            split_qkv_kernel<<<
+            split_qkv_kernel<T><<<
                 blocks_for(channel_elements), kThreads, 0, stream_.get()>>>(
-                qkv_.get(), query_.get(), key_.get(), value_.get(),
+                qkv_.get<T>(), query_.get<T>(), key_.get<T>(), value_.get<T>(),
                 batch_size, channels);
             check_last_kernel("split_qkv_kernel");
 
             check_cuda(
                 paged_attention_decode(
-                    query_.get(), key_.get(), value_.get(),
-                    key_cache_.get(), value_cache_.get(),
+                    query_.get<T>(), key_.get<T>(), value_.get<T>(),
+                    key_cache_.get<T>(), value_cache_.get<T>(),
                     block_tables_.get(), context_lengths_.get(),
-                    slot_mapping_.get(), attention_.get(), batch_size,
+                    slot_mapping_.get(), attention_.get<T>(), batch_size,
                     num_pages_, config_.num_layers, layer,
                     config_.num_heads, channels / config_.num_heads,
                     max_blocks_per_sequence_, max_context_length_,
@@ -595,61 +844,87 @@ private:
                 "paged_attention_decode");
 
             matmul(
-                projected_.get(), attention_.get(),
-                parameters_view_.attprojw +
+                projected_.get<T>(), attention_.get<T>(),
+                parameters_view.attprojw +
                     static_cast<std::size_t>(layer) * channels * channels,
-                parameters_view_.attprojb +
+                parameters_view.attprojb +
                     static_cast<std::size_t>(layer) * channels,
                 batch_size, channels, channels);
-            residual_kernel<<<
-                blocks_for(channel_elements), kThreads, 0, stream_.get()>>>(
-                residual_b_.get(), residual_a_.get(), projected_.get(),
-                channel_elements);
+            if constexpr (std::is_same<T, __half>::value) {
+                residual_half2_kernel<<<
+                    blocks_for(channel_elements / 2), kThreads, 0,
+                    stream_.get()>>>(
+                    residual_b_.get<T>(), residual_a_.get<T>(),
+                    projected_.get<T>(), channel_elements);
+            } else {
+                residual_kernel<T><<<
+                    blocks_for(channel_elements), kThreads, 0,
+                    stream_.get()>>>(
+                    residual_b_.get<T>(), residual_a_.get<T>(),
+                    projected_.get<T>(), channel_elements);
+            }
             check_last_kernel("attention residual");
 
-            layernorm_kernel<<<batch_size, kThreads, 0, stream_.get()>>>(
-                normalized_.get(), residual_b_.get(),
-                parameters_view_.ln2w +
+            layernorm_kernel<T><<<batch_size, kThreads, 0, stream_.get()>>>(
+                normalized_.get<T>(), residual_b_.get<T>(),
+                parameters_view.ln2w +
                     static_cast<std::size_t>(layer) * channels,
-                parameters_view_.ln2b +
+                parameters_view.ln2b +
                     static_cast<std::size_t>(layer) * channels,
                 batch_size, channels);
             check_last_kernel("layernorm ln2");
             matmul(
-                hidden_.get(), normalized_.get(),
-                parameters_view_.fcw +
+                hidden_.get<T>(), normalized_.get<T>(),
+                parameters_view.fcw +
                     static_cast<std::size_t>(layer) *
                     hidden_width * channels,
-                parameters_view_.fcb +
+                parameters_view.fcb +
                     static_cast<std::size_t>(layer) * hidden_width,
                 batch_size, channels, hidden_width);
-            gelu_kernel<<<
-                blocks_for(batch_size * hidden_width), kThreads, 0,
-                stream_.get()>>>(
-                hidden_.get(), batch_size * hidden_width);
+            if constexpr (std::is_same<T, __half>::value) {
+                gelu_half2_kernel<<<
+                    blocks_for(batch_size * hidden_width / 2), kThreads, 0,
+                    stream_.get()>>>(
+                    hidden_.get<T>(), batch_size * hidden_width);
+            } else {
+                gelu_kernel<T><<<
+                    blocks_for(batch_size * hidden_width), kThreads, 0,
+                    stream_.get()>>>(
+                    hidden_.get<T>(), batch_size * hidden_width);
+            }
             check_last_kernel("gelu_kernel");
             matmul(
-                projected_.get(), hidden_.get(),
-                parameters_view_.fcprojw +
+                projected_.get<T>(), hidden_.get<T>(),
+                parameters_view.fcprojw +
                     static_cast<std::size_t>(layer) *
                     channels * hidden_width,
-                parameters_view_.fcprojb +
+                parameters_view.fcprojb +
                     static_cast<std::size_t>(layer) * channels,
                 batch_size, hidden_width, channels);
-            residual_kernel<<<
-                blocks_for(channel_elements), kThreads, 0, stream_.get()>>>(
-                residual_a_.get(), residual_b_.get(), projected_.get(),
-                channel_elements);
+            if constexpr (std::is_same<T, __half>::value) {
+                residual_half2_kernel<<<
+                    blocks_for(channel_elements / 2), kThreads, 0,
+                    stream_.get()>>>(
+                    residual_a_.get<T>(), residual_b_.get<T>(),
+                    projected_.get<T>(), channel_elements);
+            } else {
+                residual_kernel<T><<<
+                    blocks_for(channel_elements), kThreads, 0,
+                    stream_.get()>>>(
+                    residual_a_.get<T>(), residual_b_.get<T>(),
+                    projected_.get<T>(), channel_elements);
+            }
             check_last_kernel("MLP residual");
         }
 
-        layernorm_kernel<<<batch_size, kThreads, 0, stream_.get()>>>(
-            normalized_.get(), residual_a_.get(), parameters_view_.lnfw,
-            parameters_view_.lnfb, batch_size, channels);
+        layernorm_kernel<T><<<batch_size, kThreads, 0, stream_.get()>>>(
+            normalized_.get<T>(), residual_a_.get<T>(),
+            parameters_view.lnfw, parameters_view.lnfb,
+            batch_size, channels);
         check_last_kernel("final layernorm");
-        matmul(
-            logits_.get(), normalized_.get(), parameters_view_.wte,
-            nullptr, batch_size, channels, config_.padded_vocab_size);
+        logits_matmul(
+            normalized_.get<T>(), parameters_view.wte,
+            batch_size, channels, config_.padded_vocab_size);
         argmax_kernel<<<batch_size, kThreads, 0, stream_.get()>>>(
             logits_.get(), sampled_token_ids_.get(), batch_size,
             config_.vocab_size, config_.padded_vocab_size);
@@ -695,26 +970,25 @@ private:
     std::size_t num_parameters_;
     CudaStream stream_;
     CublasHandle cublas_;
-    DeviceBuffer<float> parameters_;
-    ParameterViews parameters_view_;
+    DeviceTensorBuffer parameters_;
     DeviceBuffer<int> token_ids_;
     DeviceBuffer<int> positions_;
     DeviceBuffer<int> context_lengths_;
     DeviceBuffer<int> slot_mapping_;
     DeviceBuffer<int> block_tables_;
     DeviceBuffer<int> sampled_token_ids_;
-    DeviceBuffer<float> key_cache_;
-    DeviceBuffer<float> value_cache_;
-    DeviceBuffer<float> residual_a_;
-    DeviceBuffer<float> residual_b_;
-    DeviceBuffer<float> normalized_;
-    DeviceBuffer<float> qkv_;
-    DeviceBuffer<float> query_;
-    DeviceBuffer<float> key_;
-    DeviceBuffer<float> value_;
-    DeviceBuffer<float> attention_;
-    DeviceBuffer<float> projected_;
-    DeviceBuffer<float> hidden_;
+    DeviceTensorBuffer key_cache_;
+    DeviceTensorBuffer value_cache_;
+    DeviceTensorBuffer residual_a_;
+    DeviceTensorBuffer residual_b_;
+    DeviceTensorBuffer normalized_;
+    DeviceTensorBuffer qkv_;
+    DeviceTensorBuffer query_;
+    DeviceTensorBuffer key_;
+    DeviceTensorBuffer value_;
+    DeviceTensorBuffer attention_;
+    DeviceTensorBuffer projected_;
+    DeviceTensorBuffer hidden_;
     DeviceBuffer<float> logits_;
     std::vector<ModelInput> last_model_inputs_;
     std::size_t last_host_to_device_bytes_ = 0;
@@ -760,6 +1034,10 @@ std::size_t GPT2CudaModelRunner::kv_cache_bytes() const {
 
 std::size_t GPT2CudaModelRunner::activation_bytes() const {
     return impl_->activation_bytes();
+}
+
+CudaDataType GPT2CudaModelRunner::data_type() const {
+    return impl_->data_type();
 }
 
 } // namespace cuda
