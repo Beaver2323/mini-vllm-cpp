@@ -16,10 +16,10 @@
 | BlockManager | 已完成第一版 | 跨块分配、释放、FIFO 复用、double-free 检测 |
 | Scheduler | 已完成第一版 | Token Budget、Chunked Prefill、动态加入/退出 |
 | 动态 Batch 执行原语 | 已完成 | 每个请求独立 context length，支持中途加入和提前退出 |
-| Scheduler/ModelRunner 闭环 | 已完成 CPU 基线 | 混合 Decode/Chunked Prefill、greedy sample、commit/release |
-| 可复现 Benchmark | 已完成 CPU 基线 | 三种模式、逐请求 TTFT/TPOT、CSV/JSON 原始结果 |
+| Scheduler/ModelRunner 闭环 | 已完成 CPU/CUDA 基线 | 混合 Decode/Chunked Prefill、设备 Argmax、commit/release |
+| 可复现 Benchmark | 已完成 CPU/CUDA 基线 | TTFT/TPOT、吞吐、CSV/JSON 与 Nsight Systems 结果 |
 | 抢占与 Prefix Cache | 未完成 | Block 引用计数已预留 |
-| CUDA Paged Attention | 已完成独立 FP32 Decode 基线 | CPU double reference、memcheck、racecheck 与 RTX 3090 Benchmark |
+| CUDA Paged Attention | 已完成并接入 GPT-2 | GPU KV Cache、Slot Mapping、模型级 reference 与 Sanitizer |
 
 模型级测试使用两个独立 GPT-2 实例：reference 对两个请求执行完整前缀前向，incremental
 逐 Token 写入分页 KV Cache。请求 0 执行长度 1--33；请求 1 在全局第 5 步加入，执行到
@@ -30,8 +30,8 @@
 
 Scheduler、GPT2ModelRunner 和 GPT-2 异长动态 Batch 已经形成端到端闭环。模型级测试
 覆盖混合 Decode/Chunked Prefill、动态加入/退出、跨页扩容、Block 回收复用，并确认
-greedy 输出与完整前缀前向一致。CPU Benchmark 已完成；独立 CUDA PagedAttention
-Decode Kernel 已实现并通过正确性和 Sanitizer 验证，尚未接入完整 GPT-2 执行链路。
+greedy 输出与完整前缀前向一致。CPU 与 CUDA Benchmark 均已完成；CUDA PagedAttention
+已接入完整 12 层 GPT-2 Decode，模型权重、KV Cache、中间激活和 logits 驻留 GPU。
 
 ## 代码地图
 
@@ -77,6 +77,15 @@ dev/cuda/test_paged_attention.cu
 
 benchmark/benchmark_cuda_paged_attention.cu
   CUDA Event 计时、P50/P95 与算法有效带宽记录
+
+mini_vllm/cuda/gpt2_cuda_model_runner.cu
+  设备内存生命周期、cuBLAS 线性层、Transformer Decode 与 GPU Argmax
+
+mini_vllm/cuda/gpt2_cuda_engine.hpp
+  CUDA schedule → run → sample → commit/release 闭环
+
+dev/cuda/test_gpt2_cuda_model_runner.cu
+  GPU/CPU 完整词表 logits、生成 Token、跨页和 Block 复用测试
 ```
 
 编译和运行：
@@ -92,8 +101,10 @@ OMP_NUM_THREADS=16 conda run -p /home/miniconda3/envs/zyf1 ./test_gpt2_engine
 conda run -p /home/miniconda3/envs/zyf1 ./mini_vllm_demo
 OMP_NUM_THREADS=16 conda run -p /home/miniconda3/envs/zyf1 ./mini_vllm_gpt2_demo
 make GPU_COMPUTE_CAPABILITY=86 \
-  test_cuda_paged_attention benchmark_cuda_paged_attention
+  test_cuda_paged_attention test_gpt2_cuda_model_runner \
+  benchmark_cuda_paged_attention benchmark_gpt2_cuda_serving
 CUDA_VISIBLE_DEVICES=0 ./test_cuda_paged_attention
+OMP_NUM_THREADS=16 CUDA_VISIBLE_DEVICES=0 ./test_gpt2_cuda_model_runner
 ```
 
 ## nano-vLLM 参考环境
@@ -175,11 +186,15 @@ Chunked Prefill 在 ModelRunner 内拆成单 Token 微步，每个微步压紧�
 Head，Q、分页 K/V、Block Table 和 Context Length 均驻留在 GPU。测试覆盖长度
 1/7/15/16/17/31/32/33/64，最大绝对误差为 4.47035e-08；Compute Sanitizer
 memcheck 为 0 errors，racecheck 为 0 hazards。在 RTX 3090 的 12 Heads、Head Size 64
-配置上，B=32、Context=256 的 Kernel 延迟 P50/P95 为 81.961/82.085 us，算法有效
-带宽为 618.891 GB/s。该数字仅代表“新 K/V 写入 + Attention”两个独立 Kernel。
+配置上，B=32、Context=256 的 Kernel 延迟 P50/P95 为 82.125/82.209 us，算法有效
+带宽为 617.656 GB/s。该数字仅代表“新 K/V 写入 + Attention”两个独立 Kernel。
 
-下一阶段将 GPU KV Cache 和调度元数据接入 GPT2ModelRunner，形成设备侧端到端
-Decode 路径；随后再做 FP16、向量化访存、Warp Reduction 和融合优化。
+GPU ModelRunner 已完成设备侧端到端 Decode。在与 CPU Benchmark 相同的 4 请求负载
+中，RTX 3090 FP32 输出吞吐中位数为 295.708 tok/s，CPU Continuous Batching 为
+7.714 tok/s；完整词表 logits 最大绝对误差为 2.5177e-04，所有生成 Token 一致。
+Nsight Systems 显示 cuBLAS GEMV/GEMM 类 Kernel 占 GPU Kernel 时间约 63%，
+PagedAttention 占 8.7%，LayerNorm 占 8.1%。下一阶段优先实现多 Token Prefill，
+然后再做低精度、融合和 CUDA Graph。
 
 ## 学习 nano-vLLM 的顺序
 

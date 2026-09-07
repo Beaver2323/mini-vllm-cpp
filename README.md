@@ -4,10 +4,10 @@
 LLM 推理引擎。项目使用 C++ 实现推理执行路径，并参考 vLLM 的核心抽象逐步加入
 增量解码、分页 KV Cache、请求调度和连续批处理。
 
-当前版本包含经过模型级正确性验证的 CPU 推理闭环，以及一版独立的 FP32 CUDA
-PagedAttention Decode Kernel。它适合用于学习 LLM 推理引擎中“请求怎样被调度、
-KV Cache 怎样分页、ModelRunner 怎样组织 Batch、GPU Kernel 怎样消费调度元数据”
-这条完整主线。
+当前版本同时包含 CPU 正确性基线和端到端 FP32 CUDA Decode 路径。Scheduler 产生的
+Token、Position、Context Length、Slot Mapping 与 Block Table 会进入 GPU ModelRunner；
+模型权重、分页 KV Cache、中间激活和 logits 在设备侧持久保存，只把最终 Greedy Token
+传回 CPU。
 
 ## 当前能力
 
@@ -19,9 +19,9 @@ KV Cache 怎样分页、ModelRunner 怎样组织 Batch、GPU Kernel 怎样消费
 | BlockManager | 已完成第一版 | 支持 Block 分配、释放、复用和异常检查 |
 | Scheduler | 已完成第一版 | 支持 Token Budget、Chunked Prefill 和动态准入/退出 |
 | 异长动态 Batch | 已完成 | 每个请求拥有独立 context length |
-| Scheduler/ModelRunner 闭环 | 已完成 CPU 基线 | 支持混合 Decode 与 Chunked Prefill |
-| 可复现 Benchmark | 已完成 CPU 基线 | 三种模式、warmup、3 次重复、逐请求指标和原始结果 |
-| CUDA PagedAttention | 已完成第一版 | FP32 Decode，GPU 驻留页表与 KV Cache，含正确性和性能测试 |
+| Scheduler/ModelRunner 闭环 | 已完成 CPU/CUDA 基线 | 支持混合 Decode、Chunked Prefill、动态请求和页复用 |
+| 可复现 Benchmark | 已完成 CPU/CUDA 基线 | warmup、重复测试、TTFT/TPOT、吞吐和原始结果 |
+| CUDA PagedAttention | 已完成并接入模型 | FP32 Decode，设备侧页表、Slot Mapping 与 KV Cache |
 | Prefix Cache 与抢占 | 未开始 | Block 引用计数接口已经预留 |
 
 ## 架构
@@ -72,9 +72,14 @@ greedy sampling 和状态提交。
 | `dev/test_paged_attention_resume.cpp` | PagedAttention 稠密参考测试 |
 | `dev/test_gpt2_paged_inference.cpp` | GPT-2 模型级全词表正确性测试 |
 | `dev/test_gpt2_engine.cpp` | Continuous Batching 端到端测试 |
+| `mini_vllm/model_input.hpp` | CPU/CUDA 共用的调度元数据构造与校验 |
 | `mini_vllm/cuda/paged_attention.cu` | CUDA KV 写入与 PagedAttention Decode Kernel |
+| `mini_vllm/cuda/gpt2_cuda_model_runner.cu` | GPU 权重、KV Cache、Transformer 层与设备 Argmax |
+| `mini_vllm/cuda/gpt2_cuda_engine.hpp` | CUDA schedule、run、sample、commit 执行闭环 |
 | `dev/cuda/test_paged_attention.cu` | CUDA Kernel 与独立 CPU 稠密参考对照 |
+| `dev/cuda/test_gpt2_cuda_model_runner.cu` | GPU ModelRunner 端到端正确性测试 |
 | `benchmark/benchmark_cuda_paged_attention.cu` | CUDA Kernel 延迟与有效带宽测试 |
+| `benchmark/benchmark_gpt2_cuda_serving.cu` | GPU 服务 TTFT、TPOT 与吞吐测试 |
 | `doc/mini_vllm_roadmap_zh.md` | 开发路线、实验结果和学习顺序 |
 | `doc/paged_inference_learning_zh.md` | 分页推理原理与代码讲解 |
 
@@ -111,12 +116,15 @@ OMP_NUM_THREADS=16 conda run -p /home/miniconda3/envs/zyf1 \
   ./test_gpt2_engine
 ```
 
-CUDA PagedAttention 可独立构建和验证，不依赖 GPT-2 权重：
+CUDA PagedAttention 可独立构建和验证；GPU ModelRunner 测试需要 GPT-2 权重：
 
 ```bash
 make GPU_COMPUTE_CAPABILITY=86 \
-  test_cuda_paged_attention benchmark_cuda_paged_attention
+  test_cuda_paged_attention test_gpt2_cuda_model_runner \
+  benchmark_cuda_paged_attention benchmark_gpt2_cuda_serving
 CUDA_VISIBLE_DEVICES=0 ./test_cuda_paged_attention
+OMP_NUM_THREADS=16 CUDA_VISIBLE_DEVICES=0 \
+  ./test_gpt2_cuda_model_runner
 CUDA_VISIBLE_DEVICES=0 compute-sanitizer --tool memcheck \
   ./test_cuda_paged_attention
 CUDA_VISIBLE_DEVICES=0 compute-sanitizer --tool racecheck \
@@ -144,6 +152,8 @@ GPT2Engine full-prefix greedy agreement=passed
 CUDA PagedAttention max_abs_error=4.47035e-08
 CUDA PagedAttention KV write max_error=0
 Compute Sanitizer memcheck=0 errors, racecheck=0 hazards
+CUDA GPT2ModelRunner max_abs_logit_error=0.00025177
+CUDA GPT2ModelRunner CPU greedy agreement=passed
 ```
 
 ## CPU Benchmark
@@ -158,8 +168,8 @@ Compute Sanitizer memcheck=0 errors, racecheck=0 hazards
 | 连续批处理 | 2.074 s | 7.714 tok/s | 1200.8 / 1812.5 ms | 276.3 / 276.3 ms |
 
 Continuous Batching 在该工作负载中的吞吐是分页单请求的 1.99 倍。CPU 上完整前缀重算
-利用较大的矩阵乘，吞吐与连续批处理接近；这说明下一阶段需要多 Token Prefill 和
-CUDA kernel，而不能把减少计算量直接等同于端到端加速。
+利用较大的矩阵乘，吞吐与连续批处理接近；这说明 Prefill 需要保留多 Token GEMM，
+不能把减少计算量直接等同于端到端加速。
 
 复现方法和指标解释见
 [开发任务 02：可复现 Benchmark](doc/task_02_benchmark_zh.md)。
@@ -172,26 +182,46 @@ RTX 3090、`sm_86`、12 Heads、Head Size 64、Page Size 16，计时范围包含
 
 | Batch | Context | 延迟 P50/P95 | 有效带宽 |
 | ---: | ---: | ---: | ---: |
-| 1 | 16 | 9.144 / 9.175 us | 12.094 GB/s |
-| 1 | 512 | 60.027 / 60.074 us | 52.610 GB/s |
-| 8 | 256 | 48.343 / 54.422 us | 262.317 GB/s |
-| 32 | 256 | 81.961 / 82.085 us | 618.891 GB/s |
-| 32 | 512 | 191.212 / 192.370 us | 528.506 GB/s |
+| 1 | 16 | 9.196 / 9.217 us | 12.027 GB/s |
+| 1 | 512 | 60.119 / 60.151 us | 52.529 GB/s |
+| 8 | 256 | 48.701 / 48.908 us | 260.387 GB/s |
+| 32 | 256 | 82.125 / 82.209 us | 617.656 GB/s |
+| 32 | 512 | 190.945 / 191.995 us | 529.243 GB/s |
 
 这里的有效带宽按算法所需的 Q/K/V、输出和新 K/V 字节数计算，不等于硬件计数器测得的
 DRAM 带宽。该结果衡量独立 FP32 Kernel，不能代表完整模型的端到端吞吐。
 完整 12 组原始结果见 `benchmark/results/cuda_paged_attention_rtx3090.json` 和 `.csv`，
 实现与分析见 [开发任务 03：CUDA PagedAttention](doc/task_03_cuda_paged_attention_zh.md)。
 
+## GPU 端到端 Benchmark
+
+与 CPU Benchmark 使用同一 GPT-2 124M 权重、Prompt Token 和输出长度。RTX 3090、
+FP32、4 个请求同时到达，每个请求输出 4 Token；预热一次后正式重复 3 次：
+
+| 路径 | 中位总时间 | 输出吞吐 | TTFT P50/P95 | TPOT P50/P95 |
+| --- | ---: | ---: | ---: | ---: |
+| CPU Continuous Batching | 2074.0 ms | 7.714 tok/s | 1200.8 / 1812.5 ms | 276.3 / 276.3 ms |
+| CUDA Continuous Batching | 54.107 ms | 295.708 tok/s | 30.912 / 47.232 ms | 1.397 / 19.200 ms |
+
+固定负载下 CUDA 吞吐约为 CPU Continuous Batching 的 38.3 倍。16 个生成 Token 与独立
+CPU 完整前缀 Greedy Reference 全部一致。该数字用于本项目版本间回归，不代表 vLLM、
+其他模型、精度或工作负载的通用加速比。
+
+Nsight Systems 显示 GPU Kernel 时间主要由 cuBLAS GEMV/GEMM 类 Kernel 占用约 63%，
+PagedAttention 占 8.7%，LayerNorm 占 8.1%；两次被分析运行共启动 17,576 个 Kernel，
+说明下一阶段最有价值的是多 Token Prefill、Kernel Fusion 和 CUDA Graph。
+
+完整说明见 [开发任务 04：GPU ModelRunner](doc/task_04_gpu_model_runner_zh.md)。
+
 ## 下一步开发任务
 
-当前最高优先级任务是把独立 CUDA Kernel 接入 ModelRunner：
+当前最高优先级任务是优化已经接通的 GPU 执行路径：
 
-1. 增加 GPU KV Cache 的生命周期管理，使 BlockManager 的物理页直接对应设备内存。
-2. 将 ModelRunner 生成的 Block Table、Context Length 和 Slot Mapping 持久化在 GPU。
-3. 接通 GPT-2 每层 Q/K/V 输出与 CUDA PagedAttention，避免中间结果回传 CPU。
-4. 增加 CPU/CUDA 端到端 logits 和生成 Token 对齐测试。
-5. 完成后再加入 FP16、向量化访存、Warp Reduction 和 Kernel Fusion。
+1. 为 Prefill 增加多 Token GEMM 路径，避免把 Prompt 拆成大量 T=1 微步。
+2. 增加 FP16/BF16 权重和 KV Cache，使用 Tensor Core。
+3. 融合 Bias、Residual、LayerNorm 等小 Kernel，减少 Launch 次数。
+4. 为固定 Batch Bucket 捕获 CUDA Graph，并与 Eager 路径对照。
+5. 在控制面实现 Prefix Cache、引用计数与抢占。
 
 ## 学习文档
 
@@ -200,6 +230,7 @@ DRAM 带宽。该结果衡量独立 FP32 Kernel，不能代表完整模型的端
 - [开发任务 01：接通 Scheduler 与 GPT2ModelRunner](doc/task_01_gpt2_model_runner_zh.md)
 - [开发任务 02：可复现推理 Benchmark](doc/task_02_benchmark_zh.md)
 - [开发任务 03：CUDA PagedAttention](doc/task_03_cuda_paged_attention_zh.md)
+- [开发任务 04：GPU ModelRunner](doc/task_04_gpu_model_runner_zh.md)
 - [简历项目表述](doc/resume_project.tex)
 
 ## 来源与许可证

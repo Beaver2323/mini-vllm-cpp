@@ -28,6 +28,8 @@
     实现当前 K/V 写入、非连续物理页寻址、并行归约、稳定 Softmax 与 Value 聚合；
     覆盖异长 Batch 和 16/17、32/33 跨页边界，与独立 CPU 稠密参考的最大绝对误差为
     $4.47\times10^{-8}$，通过 Compute Sanitizer memcheck/racecheck；
-    在 RTX 3090、Batch 32、Context 256 配置下测得两个 Kernel 的 P50 延迟为
-    81.961 $\mu$s、算法有效带宽为 618.891 GB/s。
+    接入 12 层 GPT-2 GPU ModelRunner，以 cuBLAS 执行线性层并在设备侧完成 Argmax，
+    权重、分页 KV Cache、中间激活与 logits 全程驻留 GPU；完整词表 logits 与 CPU
+    Reference 最大绝对误差为 $2.52\times10^{-4}$，生成 Token 完全一致；固定 4 请求
+    负载在 RTX 3090 上达到 295.708 tok/s，相对 CPU Continuous Batching 提升 38.3 倍。
 \end{itemize}
