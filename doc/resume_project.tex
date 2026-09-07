@@ -1,7 +1,7 @@
 % Replace only the original llm.c project section. Uses existing resume macros.
 \projectHeading
 {基于 llm.c 的 Mini-vLLM 推理引擎}
-{C/C++ / OpenMP}
+{C/C++ / CUDA / OpenMP}
 
 \begin{itemize}
     \item \textbf{增量解码链路：}
@@ -22,4 +22,12 @@
     在多层、多头、跨页及非连续页映射场景下与独立稠密参考对齐；
     构造 Decode/Prefill 混合及请求动态加入/退出场景，
     验证跨页扩容、释放复用，并与完整前缀 GPT-2 的全词表 logits 及生成 Token 对齐。
+
+    \item \textbf{CUDA PagedAttention：}
+    开发 FP32 Decode Kernel，采用一个 CUDA Block 处理一个请求的一个 Attention Head，
+    实现当前 K/V 写入、非连续物理页寻址、并行归约、稳定 Softmax 与 Value 聚合；
+    覆盖异长 Batch 和 16/17、32/33 跨页边界，与独立 CPU 稠密参考的最大绝对误差为
+    $4.47\times10^{-8}$，通过 Compute Sanitizer memcheck/racecheck；
+    在 RTX 3090、Batch 32、Context 256 配置下测得两个 Kernel 的 P50 延迟为
+    81.961 $\mu$s、算法有效带宽为 618.891 GB/s。
 \end{itemize}

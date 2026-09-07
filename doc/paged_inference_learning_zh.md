@@ -140,20 +140,20 @@ OMP_NUM_THREADS=2 conda run -p /home/miniconda3/envs/zyf1 /tmp/zyf_paged_attenti
 
 ## 8. 下一步怎样实质升级项目
 
-下面均为待实现项，按建议顺序推进。
+按建议顺序推进，括号内为当前状态。
 
 1. **独立推理入口与工作区（已完成）**：按 T=1 推理形状分配缓冲，并单独分配线性 Attention scratch。
 2. **控制面接入模型（已完成）**：ModelRunner 已整理 token、position、context length、slot mapping 与 block table。
 3. **调度与执行闭环（已完成）**：Engine 已连接 schedule、run、greedy sample、commit 和页回收。
-4. **可信 Benchmark（下一步）**：比较完整前缀重算、分页增量和连续批处理；固定权重、Token、线程数、编译选项及长度，记录预热后多次延迟、吞吐和内存口径。
-5. **设备算子扩展**：实现 CUDA 或 Triton decode kernel，再分析显存管理、访存布局和 profiling。
+4. **可信 Benchmark（已完成 CPU 基线）**：比较完整前缀重算、分页增量和连续批处理；固定权重、Token、线程数、编译选项及长度，记录预热后多次延迟、吞吐和内存口径。
+5. **设备算子扩展（已完成独立 Kernel）**：FP32 CUDA PagedAttention Decode 已通过稠密参考、memcheck、racecheck 与 RTX 3090 Benchmark；下一步接入 GPU ModelRunner。
 
 现有细节也值得修复：页表初始化为 0 会把未分配项伪装成合法页；softmax 最大值初值应使用负无穷而不是 -10000；裸指针所有权需要禁用拷贝或使用 RAII；推理入口缺少 Token 和上下文长度等输入校验。
 `acts.preatt` 被用作 `[B, NH, max_seq_len]` scratch，但实际空间按训练 T 分配，需显式验证容量，不能依赖默认配置碰巧够大。
 
 ## 9. 一分钟项目讲述
 
-“我基于 llm.c 的 GPT-2 实现扩展了 CPU 增量推理路径，每步只处理新 Token，并缓存每层历史 K/V。我实现了 16 Token 一页的 KV Block Pool 和页表寻址，并用 BlockManager 管理请求的分配、释放和复用。在控制面上，我实现 Token Budget 和 Chunked Prefill Scheduler，再通过 GPT2ModelRunner 将调度结果转换为异长动态微批次，形成 schedule、run、sample、commit 的连续批处理闭环。测试覆盖 Decode 与 Prefill 混合、动态请求、跨页和 Block 复用，生成 Token 与完整前缀 GPT-2 一致。当前是 CPU 正确性基线，下一步建立 Benchmark 后实现 CUDA PagedAttention。”
+“我基于 llm.c 的 GPT-2 实现扩展了 CPU 增量推理路径，每步只处理新 Token，并缓存每层历史 K/V。我实现了 16 Token 一页的 KV Block Pool 和页表寻址，并用 BlockManager 管理请求的分配、释放和复用。在控制面上，我实现 Token Budget 和 Chunked Prefill Scheduler，再通过 GPT2ModelRunner 将调度结果转换为异长动态微批次，形成 schedule、run、sample、commit 的连续批处理闭环。测试覆盖 Decode 与 Prefill 混合、动态请求、跨页和 Block 复用，生成 Token 与完整前缀 GPT-2 一致。在设备侧，我实现了 FP32 CUDA PagedAttention Decode Kernel，完成 K/V 写入、非连续页寻址、稳定 Softmax 和 Value 聚合，并通过稠密参考、memcheck、racecheck 与 RTX 3090 Benchmark。下一步把设备 KV Cache 和调度元数据接入 ModelRunner。”
 
 理解每句话再用于面试。新增测试是在本次协作中补充的，应先读懂参考实现与测试覆盖范围。
 

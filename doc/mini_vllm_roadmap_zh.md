@@ -19,7 +19,7 @@
 | Scheduler/ModelRunner 闭环 | 已完成 CPU 基线 | 混合 Decode/Chunked Prefill、greedy sample、commit/release |
 | 可复现 Benchmark | 已完成 CPU 基线 | 三种模式、逐请求 TTFT/TPOT、CSV/JSON 原始结果 |
 | 抢占与 Prefix Cache | 未完成 | Block 引用计数已预留 |
-| CUDA Paged Attention | 未完成 | CPU 实现作为后续 reference |
+| CUDA Paged Attention | 已完成独立 FP32 Decode 基线 | CPU double reference、memcheck、racecheck 与 RTX 3090 Benchmark |
 
 模型级测试使用两个独立 GPT-2 实例：reference 对两个请求执行完整前缀前向，incremental
 逐 Token 写入分页 KV Cache。请求 0 执行长度 1--33；请求 1 在全局第 5 步加入，执行到
@@ -30,7 +30,8 @@
 
 Scheduler、GPT2ModelRunner 和 GPT-2 异长动态 Batch 已经形成端到端闭环。模型级测试
 覆盖混合 Decode/Chunked Prefill、动态加入/退出、跨页扩容、Block 回收复用，并确认
-greedy 输出与完整前缀前向一致。CPU Benchmark 已完成；GPU kernel 尚未实现。
+greedy 输出与完整前缀前向一致。CPU Benchmark 已完成；独立 CUDA PagedAttention
+Decode Kernel 已实现并通过正确性和 Sanitizer 验证，尚未接入完整 GPT-2 执行链路。
 
 ## 代码地图
 
@@ -67,6 +68,15 @@ dev/test_gpt2_paged_inference.cpp
 
 dev/test_gpt2_engine.cpp
   Continuous Batching 端到端及完整前缀对齐测试
+
+mini_vllm/cuda/paged_attention.cu
+  当前 K/V 写入、分页寻址、稳定 Softmax 与 Value 聚合
+
+dev/cuda/test_paged_attention.cu
+  异长请求、乱序物理页与跨页边界的独立稠密参考测试
+
+benchmark/benchmark_cuda_paged_attention.cu
+  CUDA Event 计时、P50/P95 与算法有效带宽记录
 ```
 
 编译和运行：
@@ -81,6 +91,9 @@ OMP_NUM_THREADS=16 conda run -p /home/miniconda3/envs/zyf1 ./test_gpt2_paged_inf
 OMP_NUM_THREADS=16 conda run -p /home/miniconda3/envs/zyf1 ./test_gpt2_engine
 conda run -p /home/miniconda3/envs/zyf1 ./mini_vllm_demo
 OMP_NUM_THREADS=16 conda run -p /home/miniconda3/envs/zyf1 ./mini_vllm_gpt2_demo
+make GPU_COMPUTE_CAPABILITY=86 \
+  test_cuda_paged_attention benchmark_cuda_paged_attention
+CUDA_VISIBLE_DEVICES=0 ./test_cuda_paged_attention
 ```
 
 ## nano-vLLM 参考环境
@@ -156,8 +169,17 @@ Chunked Prefill 在 ModelRunner 内拆成单 Token 微步，每个微步压紧�
 
 完整前缀重算、分页增量和 Continuous Batching 三组 CPU Benchmark 已完成。在固定
 4 请求工作负载中，Continuous Batching 吞吐为分页单请求的 1.99 倍；完整前缀重算
-利用多 Token GEMM，吞吐与 Continuous Batching 接近。下一阶段实现 CUDA
-PagedAttention，并增加多 Token Prefill 路径。
+利用多 Token GEMM，吞吐与 Continuous Batching 接近。
+
+独立 CUDA PagedAttention 基线采用一个 CUDA Block 处理一个请求的一个 Attention
+Head，Q、分页 K/V、Block Table 和 Context Length 均驻留在 GPU。测试覆盖长度
+1/7/15/16/17/31/32/33/64，最大绝对误差为 4.47035e-08；Compute Sanitizer
+memcheck 为 0 errors，racecheck 为 0 hazards。在 RTX 3090 的 12 Heads、Head Size 64
+配置上，B=32、Context=256 的 Kernel 延迟 P50/P95 为 81.961/82.085 us，算法有效
+带宽为 618.891 GB/s。该数字仅代表“新 K/V 写入 + Attention”两个独立 Kernel。
+
+下一阶段将 GPU KV Cache 和调度元数据接入 GPT2ModelRunner，形成设备侧端到端
+Decode 路径；随后再做 FP16、向量化访存、Warp Reduction 和融合优化。
 
 ## 学习 nano-vLLM 的顺序
 

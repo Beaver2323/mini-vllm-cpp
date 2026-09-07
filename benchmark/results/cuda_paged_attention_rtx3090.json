@@ -1,0 +1,31 @@
+{
+  "metadata": {
+    "git_commit": "38fd982",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "compute_capability": "8.6",
+    "compiled_gpu_arch": "sm_86",
+    "driver_version": 12050,
+    "runtime_version": 12050,
+    "num_heads": 12,
+    "head_size": 64,
+    "page_size": 16,
+    "warmup_iterations": 20,
+    "iterations_per_repeat": 50,
+    "repeats": 20,
+    "latency_scope": "two GPU kernels: KV write plus paged attention"
+  },
+  "results": [
+    {"batch_size": 1, "context_length": 16, "latency_p50_us": 9.144320, "latency_p95_us": 9.175040, "useful_bandwidth_gbps": 12.094065},
+    {"batch_size": 1, "context_length": 64, "latency_p50_us": 13.455360, "latency_p95_us": 13.511680, "useful_bandwidth_gbps": 30.136986},
+    {"batch_size": 1, "context_length": 256, "latency_p50_us": 32.665601, "latency_p95_us": 32.686081, "useful_bandwidth_gbps": 48.526645},
+    {"batch_size": 1, "context_length": 512, "latency_p50_us": 60.026879, "latency_p95_us": 60.073984, "useful_bandwidth_gbps": 52.610031},
+    {"batch_size": 8, "context_length": 16, "latency_p50_us": 9.523200, "latency_p95_us": 9.585664, "useful_bandwidth_gbps": 92.903228},
+    {"batch_size": 8, "context_length": 64, "latency_p50_us": 15.452160, "latency_p95_us": 15.482880, "useful_bandwidth_gbps": 209.940363},
+    {"batch_size": 8, "context_length": 256, "latency_p50_us": 48.343041, "latency_p95_us": 54.421504, "useful_bandwidth_gbps": 262.317301},
+    {"batch_size": 8, "context_length": 512, "latency_p50_us": 89.948158, "latency_p95_us": 90.008380, "useful_bandwidth_gbps": 280.874322},
+    {"batch_size": 32, "context_length": 16, "latency_p50_us": 9.871360, "latency_p95_us": 9.891840, "useful_bandwidth_gbps": 358.506222},
+    {"batch_size": 32, "context_length": 64, "latency_p50_us": 26.316800, "latency_p95_us": 26.357760, "useful_bandwidth_gbps": 493.073928},
+    {"batch_size": 32, "context_length": 256, "latency_p50_us": 81.960964, "latency_p95_us": 82.084860, "useful_bandwidth_gbps": 618.890523},
+    {"batch_size": 32, "context_length": 512, "latency_p50_us": 191.211519, "latency_p95_us": 192.369665, "useful_bandwidth_gbps": 528.506402}
+  ]
+}

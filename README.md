@@ -4,8 +4,10 @@
 LLM 推理引擎。项目使用 C++ 实现推理执行路径，并参考 vLLM 的核心抽象逐步加入
 增量解码、分页 KV Cache、请求调度和连续批处理。
 
-当前版本是经过模型级正确性验证的 CPU 原型。它适合用于学习 LLM 推理引擎中
-“请求怎样被调度、KV Cache 怎样分页、模型怎样执行异长 Batch”这条完整主线。
+当前版本包含经过模型级正确性验证的 CPU 推理闭环，以及一版独立的 FP32 CUDA
+PagedAttention Decode Kernel。它适合用于学习 LLM 推理引擎中“请求怎样被调度、
+KV Cache 怎样分页、ModelRunner 怎样组织 Batch、GPU Kernel 怎样消费调度元数据”
+这条完整主线。
 
 ## 当前能力
 
@@ -19,7 +21,7 @@ LLM 推理引擎。项目使用 C++ 实现推理执行路径，并参考 vLLM �
 | 异长动态 Batch | 已完成 | 每个请求拥有独立 context length |
 | Scheduler/ModelRunner 闭环 | 已完成 CPU 基线 | 支持混合 Decode 与 Chunked Prefill |
 | 可复现 Benchmark | 已完成 CPU 基线 | 三种模式、warmup、3 次重复、逐请求指标和原始结果 |
-| CUDA PagedAttention | 未开始 | CPU 实现将作为正确性参考 |
+| CUDA PagedAttention | 已完成第一版 | FP32 Decode，GPU 驻留页表与 KV Cache，含正确性和性能测试 |
 | Prefix Cache 与抢占 | 未开始 | Block 引用计数接口已经预留 |
 
 ## 架构
@@ -70,6 +72,9 @@ greedy sampling 和状态提交。
 | `dev/test_paged_attention_resume.cpp` | PagedAttention 稠密参考测试 |
 | `dev/test_gpt2_paged_inference.cpp` | GPT-2 模型级全词表正确性测试 |
 | `dev/test_gpt2_engine.cpp` | Continuous Batching 端到端测试 |
+| `mini_vllm/cuda/paged_attention.cu` | CUDA KV 写入与 PagedAttention Decode Kernel |
+| `dev/cuda/test_paged_attention.cu` | CUDA Kernel 与独立 CPU 稠密参考对照 |
+| `benchmark/benchmark_cuda_paged_attention.cu` | CUDA Kernel 延迟与有效带宽测试 |
 | `doc/mini_vllm_roadmap_zh.md` | 开发路线、实验结果和学习顺序 |
 | `doc/paged_inference_learning_zh.md` | 分页推理原理与代码讲解 |
 
@@ -106,6 +111,18 @@ OMP_NUM_THREADS=16 conda run -p /home/miniconda3/envs/zyf1 \
   ./test_gpt2_engine
 ```
 
+CUDA PagedAttention 可独立构建和验证，不依赖 GPT-2 权重：
+
+```bash
+make GPU_COMPUTE_CAPABILITY=86 \
+  test_cuda_paged_attention benchmark_cuda_paged_attention
+CUDA_VISIBLE_DEVICES=0 ./test_cuda_paged_attention
+CUDA_VISIBLE_DEVICES=0 compute-sanitizer --tool memcheck \
+  ./test_cuda_paged_attention
+CUDA_VISIBLE_DEVICES=0 compute-sanitizer --tool racecheck \
+  ./test_cuda_paged_attention
+```
+
 ## 正确性验证
 
 模型级回归包含两个异长请求：
@@ -124,6 +141,9 @@ PagedAttention dense reference max_abs_error=1.45372e-07
 GPT-2 incremental inference max_abs_error=0
 GPT-2 incremental inference max_rel_error=0
 GPT2Engine full-prefix greedy agreement=passed
+CUDA PagedAttention max_abs_error=4.47035e-08
+CUDA PagedAttention KV write max_error=0
+Compute Sanitizer memcheck=0 errors, racecheck=0 hazards
 ```
 
 ## CPU Benchmark
@@ -144,15 +164,34 @@ CUDA kernel，而不能把减少计算量直接等同于端到端加速。
 复现方法和指标解释见
 [开发任务 02：可复现 Benchmark](doc/task_02_benchmark_zh.md)。
 
+## CUDA PagedAttention Benchmark
+
+RTX 3090、`sm_86`、12 Heads、Head Size 64、Page Size 16，计时范围包含“当前 Token K/V
+写入 + PagedAttention”两个 Kernel。每个配置预热 20 次；每组连续执行 50 次，
+重复 20 组后报告组均值的 P50/P95：
+
+| Batch | Context | 延迟 P50/P95 | 有效带宽 |
+| ---: | ---: | ---: | ---: |
+| 1 | 16 | 9.144 / 9.175 us | 12.094 GB/s |
+| 1 | 512 | 60.027 / 60.074 us | 52.610 GB/s |
+| 8 | 256 | 48.343 / 54.422 us | 262.317 GB/s |
+| 32 | 256 | 81.961 / 82.085 us | 618.891 GB/s |
+| 32 | 512 | 191.212 / 192.370 us | 528.506 GB/s |
+
+这里的有效带宽按算法所需的 Q/K/V、输出和新 K/V 字节数计算，不等于硬件计数器测得的
+DRAM 带宽。该结果衡量独立 FP32 Kernel，不能代表完整模型的端到端吞吐。
+完整 12 组原始结果见 `benchmark/results/cuda_paged_attention_rtx3090.json` 和 `.csv`，
+实现与分析见 [开发任务 03：CUDA PagedAttention](doc/task_03_cuda_paged_attention_zh.md)。
+
 ## 下一步开发任务
 
-当前最高优先级任务是实现 CUDA PagedAttention：
+当前最高优先级任务是把独立 CUDA Kernel 接入 ModelRunner：
 
-1. 保持 Q、分页 K/V、Block Table 和 context length 驻留在 GPU。
-2. 使用一个或多个 CUDA Block 处理一个请求的一个 Attention Head。
-3. 实现 dot-product reduction、online/稳定 Softmax 和 Value 聚合。
-4. 支持异长请求、非连续物理页以及 16/17、32/33 跨页边界。
-5. 与现有 CPU PagedAttention reference 对齐，再建立 kernel latency/bandwidth Benchmark。
+1. 增加 GPU KV Cache 的生命周期管理，使 BlockManager 的物理页直接对应设备内存。
+2. 将 ModelRunner 生成的 Block Table、Context Length 和 Slot Mapping 持久化在 GPU。
+3. 接通 GPT-2 每层 Q/K/V 输出与 CUDA PagedAttention，避免中间结果回传 CPU。
+4. 增加 CPU/CUDA 端到端 logits 和生成 Token 对齐测试。
+5. 完成后再加入 FP16、向量化访存、Warp Reduction 和 Kernel Fusion。
 
 ## 学习文档
 
@@ -160,6 +199,7 @@ CUDA kernel，而不能把减少计算量直接等同于端到端加速。
 - [分页推理原理与实现讲解](doc/paged_inference_learning_zh.md)
 - [开发任务 01：接通 Scheduler 与 GPT2ModelRunner](doc/task_01_gpt2_model_runner_zh.md)
 - [开发任务 02：可复现推理 Benchmark](doc/task_02_benchmark_zh.md)
+- [开发任务 03：CUDA PagedAttention](doc/task_03_cuda_paged_attention_zh.md)
 - [简历项目表述](doc/resume_project.tex)
 
 ## 来源与许可证
