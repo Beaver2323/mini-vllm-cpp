@@ -18,6 +18,7 @@ LLM 推理引擎。项目使用 C++ 实现推理执行路径，并参考 vLLM �
 | Scheduler | 已完成第一版 | 支持 Token Budget、Chunked Prefill 和动态准入/退出 |
 | 异长动态 Batch | 已完成 | 每个请求拥有独立 context length |
 | Scheduler/ModelRunner 闭环 | 已完成 CPU 基线 | 支持混合 Decode 与 Chunked Prefill |
+| 可复现 Benchmark | 已完成 CPU 基线 | 三种模式、warmup、3 次重复、逐请求指标和原始结果 |
 | CUDA PagedAttention | 未开始 | CPU 实现将作为正确性参考 |
 | Prefix Cache 与抢占 | 未开始 | Block 引用计数接口已经预留 |
 
@@ -125,23 +126,40 @@ GPT-2 incremental inference max_rel_error=0
 GPT2Engine full-prefix greedy agreement=passed
 ```
 
+## CPU Benchmark
+
+固定 4 个请求，Prompt 长度为 8/16/24/32，每个请求输出 4 Token。每种模式先 warmup
+一次，再正式运行 3 次；下表为跨重复的中位数：
+
+| 模式 | 总时间 | 输出吞吐 | TTFT P50/P95 | TPOT P50/P95 |
+| --- | ---: | ---: | ---: | ---: |
+| 完整前缀重算 | 2.212 s | 7.234 tok/s | 733.0 / 1507.9 ms | 134.4 / 195.4 ms |
+| 分页单请求 | 4.127 s | 3.877 tok/s | 1822.6 / 3761.7 ms | 45.0 / 45.2 ms |
+| 连续批处理 | 2.074 s | 7.714 tok/s | 1200.8 / 1812.5 ms | 276.3 / 276.3 ms |
+
+Continuous Batching 在该工作负载中的吞吐是分页单请求的 1.99 倍。CPU 上完整前缀重算
+利用较大的矩阵乘，吞吐与连续批处理接近；这说明下一阶段需要多 Token Prefill 和
+CUDA kernel，而不能把减少计算量直接等同于端到端加速。
+
+复现方法和指标解释见
+[开发任务 02：可复现 Benchmark](doc/task_02_benchmark_zh.md)。
+
 ## 下一步开发任务
 
-当前最高优先级任务是建立可信 Benchmark：
+当前最高优先级任务是实现 CUDA PagedAttention：
 
-1. 固定请求到达时间、Prompt 长度、输出长度、Token 和线程数。
-2. 对比完整前缀重算、单请求分页增量推理和 Continuous Batching Engine。
-3. 将 warmup 与正式计时分离，并重复多轮。
-4. 报告 TTFT、TPOT、总吞吐、P50/P95 延迟及 KV Cache Block 使用峰值。
-5. 保存机器、编译参数和原始结果，避免只保留一个无法复现的加速比。
-
-Benchmark 稳定后，再实现 CUDA PagedAttention，并沿用同一工作负载验证正确性和性能。
+1. 保持 Q、分页 K/V、Block Table 和 context length 驻留在 GPU。
+2. 使用一个或多个 CUDA Block 处理一个请求的一个 Attention Head。
+3. 实现 dot-product reduction、online/稳定 Softmax 和 Value 聚合。
+4. 支持异长请求、非连续物理页以及 16/17、32/33 跨页边界。
+5. 与现有 CPU PagedAttention reference 对齐，再建立 kernel latency/bandwidth Benchmark。
 
 ## 学习文档
 
 - [从 llm.c 到 Mini-vLLM：路线图](doc/mini_vllm_roadmap_zh.md)
 - [分页推理原理与实现讲解](doc/paged_inference_learning_zh.md)
 - [开发任务 01：接通 Scheduler 与 GPT2ModelRunner](doc/task_01_gpt2_model_runner_zh.md)
+- [开发任务 02：可复现推理 Benchmark](doc/task_02_benchmark_zh.md)
 - [简历项目表述](doc/resume_project.tex)
 
 ## 来源与许可证

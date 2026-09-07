@@ -17,6 +17,7 @@
 | Scheduler | 已完成第一版 | Token Budget、Chunked Prefill、动态加入/退出 |
 | 动态 Batch 执行原语 | 已完成 | 每个请求独立 context length，支持中途加入和提前退出 |
 | Scheduler/ModelRunner 闭环 | 已完成 CPU 基线 | 混合 Decode/Chunked Prefill、greedy sample、commit/release |
+| 可复现 Benchmark | 已完成 CPU 基线 | 三种模式、逐请求 TTFT/TPOT、CSV/JSON 原始结果 |
 | 抢占与 Prefix Cache | 未完成 | Block 引用计数已预留 |
 | CUDA Paged Attention | 未完成 | CPU 实现作为后续 reference |
 
@@ -29,7 +30,7 @@
 
 Scheduler、GPT2ModelRunner 和 GPT-2 异长动态 Batch 已经形成端到端闭环。模型级测试
 覆盖混合 Decode/Chunked Prefill、动态加入/退出、跨页扩容、Block 回收复用，并确认
-greedy 输出与完整前缀前向一致。当前仍是 CPU 正确性基线，尚未完成性能 Benchmark。
+greedy 输出与完整前缀前向一致。CPU Benchmark 已完成；GPU kernel 尚未实现。
 
 ## 代码地图
 
@@ -153,8 +154,10 @@ public:
 Chunked Prefill 在 ModelRunner 内拆成单 Token 微步，每个微步压紧当前仍有工作的请求。
 这种实现先保证异长 Batch 的映射正确；后续可增加多 Token Prefill 专用执行路径。
 
-下一阶段先建立完整前缀重算、分页增量和 Continuous Batching 三组可信 Benchmark，
-再将 CPU PagedAttention 替换为 CUDA kernel。
+完整前缀重算、分页增量和 Continuous Batching 三组 CPU Benchmark 已完成。在固定
+4 请求工作负载中，Continuous Batching 吞吐为分页单请求的 1.99 倍；完整前缀重算
+利用多 Token GEMM，吞吐与 Continuous Batching 接近。下一阶段实现 CUDA
+PagedAttention，并增加多 Token Prefill 路径。
 
 ## 学习 nano-vLLM 的顺序
 
