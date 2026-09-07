@@ -37,10 +37,11 @@ using Clock = std::chrono::steady_clock;
 
 struct Options {
     int repeats = 3;
+    std::size_t token_budget = 64;
     std::string json_path =
-        "benchmark/results/gpt2_cuda_rtx3090.json";
+        "benchmark/results/gpt2_cuda_packed_rtx3090.json";
     std::string csv_path =
-        "benchmark/results/gpt2_cuda_rtx3090.csv";
+        "benchmark/results/gpt2_cuda_packed_rtx3090.csv";
 };
 
 struct RunResult {
@@ -116,7 +117,7 @@ double percentile(std::vector<double> values, double fraction) {
     return values[lower] * (1.0 - weight) + values[upper] * weight;
 }
 
-RunResult run_once(GPT2& model) {
+RunResult run_once(GPT2& model, std::size_t token_budget) {
     constexpr std::size_t max_num_sequences = 4;
     constexpr std::size_t max_context_length = 64;
     constexpr std::size_t max_new_tokens = 4;
@@ -132,7 +133,7 @@ RunResult run_once(GPT2& model) {
         config, model.params_memory, model.num_parameters,
         /*num_kv_blocks=*/16,
         {/*max_num_sequences=*/max_num_sequences,
-         /*max_num_batched_tokens=*/64},
+         /*max_num_batched_tokens=*/token_budget},
         max_context_length);
 
     const std::vector<std::size_t> prompt_lengths = {8, 16, 24, 32};
@@ -201,6 +202,8 @@ Options parse_options(int argc, char** argv) {
         };
         if (argument == "--repeats") {
             options.repeats = std::stoi(value());
+        } else if (argument == "--token-budget") {
+            options.token_budget = std::stoul(value());
         } else if (argument == "--json") {
             options.json_path = value();
         } else if (argument == "--csv") {
@@ -210,8 +213,9 @@ Options parse_options(int argc, char** argv) {
                 "unknown CUDA serving benchmark option: " + argument);
         }
     }
-    if (options.repeats <= 0) {
-        throw std::invalid_argument("repeats must be positive");
+    if (options.repeats <= 0 || options.token_budget == 0) {
+        throw std::invalid_argument(
+            "repeats and token budget must be positive");
     }
     return options;
 }
@@ -243,7 +247,7 @@ void write_tokens(
 void write_json(
     const std::string& path, const cudaDeviceProp& properties,
     int driver_version, int runtime_version,
-    const std::vector<RunResult>& runs) {
+    std::size_t token_budget, const std::vector<RunResult>& runs) {
     std::vector<double> total_ms;
     std::vector<double> throughput;
     std::vector<double> ttft_p50;
@@ -273,6 +277,8 @@ void write_json(
          << properties.major << '.' << properties.minor << "\",\n"
          << "    \"compiled_gpu_arch\": \"" << MINI_VLLM_GPU_ARCH
          << "\",\n"
+         << "    \"execution_mode\": \"packed_multi_token_prefill\",\n"
+         << "    \"scheduler_token_budget\": " << token_budget << ",\n"
          << "    \"driver_version\": " << driver_version << ",\n"
          << "    \"runtime_version\": " << runtime_version << ",\n"
          << "    \"workload\": \"prompt lengths 8/16/24/32, four output tokens each, all arrivals at t=0\",\n"
@@ -361,14 +367,14 @@ int main(int argc, char** argv) {
         gpt2_build_from_checkpoint(&model, "gpt2_124M.bin");
         const std::vector<std::vector<int>> expected_tokens =
             cpu_greedy_reference(model);
-        const RunResult warmup = run_once(model);
+        const RunResult warmup = run_once(model, options.token_budget);
         if (warmup.generated_tokens != expected_tokens) {
             throw std::runtime_error(
                 "CUDA warmup tokens differ from CPU full-prefix reference");
         }
         std::vector<RunResult> runs;
         for (int repeat = 0; repeat < options.repeats; ++repeat) {
-            RunResult run = run_once(model);
+            RunResult run = run_once(model, options.token_budget);
             if (run.generated_tokens != warmup.generated_tokens) {
                 throw std::runtime_error(
                     "CUDA benchmark generated tokens changed across runs");
@@ -388,7 +394,7 @@ int main(int argc, char** argv) {
         ensure_parent(options.csv_path);
         write_json(
             options.json_path, properties, driver_version,
-            runtime_version, runs);
+            runtime_version, options.token_budget, runs);
         write_csv(options.csv_path, runs);
         gpt2_free(&model);
         std::cout << "GPU 服务 Benchmark 原始结果已写入 "

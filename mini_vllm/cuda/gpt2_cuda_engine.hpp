@@ -34,7 +34,9 @@ public:
           scheduler_(scheduler_config, block_manager_),
           model_runner_(
               config, host_parameters, num_parameters, block_manager_,
-              scheduler_config.max_num_sequences, max_context_length),
+              scheduler_config.max_num_sequences,
+              scheduler_config.max_num_batched_tokens,
+              max_context_length),
           vocab_size_(config.vocab_size),
           max_context_length_(max_context_length) {}
 

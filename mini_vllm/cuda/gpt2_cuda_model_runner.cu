@@ -137,7 +137,8 @@ std::size_t parameter_count(const GPT2CudaConfig& config) {
 GPT2CudaConfig validate_runner_arguments(
     GPT2CudaConfig config, const float* host_parameters,
     std::size_t supplied_parameters, const BlockManager& block_manager,
-    std::size_t max_num_sequences, std::size_t max_context_length) {
+    std::size_t max_num_sequences, std::size_t max_num_batched_tokens,
+    std::size_t max_context_length) {
     if (config.max_seq_len <= 0 || config.vocab_size <= 0 ||
         config.padded_vocab_size < config.vocab_size ||
         config.num_layers <= 0 || config.num_heads <= 0 ||
@@ -150,7 +151,8 @@ GPT2CudaConfig validate_runner_arguments(
         throw std::invalid_argument(
             "CUDA runner received an invalid GPT-2 parameter buffer");
     }
-    if (max_num_sequences == 0 || max_context_length == 0 ||
+    if (max_num_sequences == 0 || max_num_batched_tokens == 0 ||
+        max_context_length == 0 ||
         max_context_length >
             static_cast<std::size_t>(config.max_seq_len)) {
         throw std::invalid_argument("invalid CUDA runner capacity");
@@ -351,13 +353,18 @@ public:
         GPT2CudaConfig config, const float* host_parameters,
         std::size_t num_parameters, BlockManager& block_manager,
         std::size_t max_num_sequences,
+        std::size_t max_num_batched_tokens,
         std::size_t max_context_length)
         : config_(validate_runner_arguments(
               config, host_parameters, num_parameters, block_manager,
-              max_num_sequences, max_context_length)),
+              max_num_sequences, max_num_batched_tokens,
+              max_context_length)),
           block_manager_(block_manager),
-          max_batch_size_(model_input_checked_int(
+          max_num_sequences_(model_input_checked_int(
               max_num_sequences, "too many active CUDA sequences")),
+          max_num_tokens_(model_input_checked_int(
+              max_num_batched_tokens,
+              "too many batched CUDA tokens")),
           max_context_length_(model_input_checked_int(
               max_context_length, "CUDA context capacity is too large")),
           max_blocks_per_sequence_(
@@ -370,29 +377,29 @@ public:
           stream_(),
           cublas_(stream_.get()),
           parameters_(num_parameters_),
-          token_ids_(max_batch_size_),
-          positions_(max_batch_size_),
-          context_lengths_(max_batch_size_),
-          slot_mapping_(max_batch_size_),
+          token_ids_(max_num_tokens_),
+          positions_(max_num_tokens_),
+          context_lengths_(max_num_tokens_),
+          slot_mapping_(max_num_tokens_),
           block_tables_(
-              static_cast<std::size_t>(max_batch_size_) *
+              static_cast<std::size_t>(max_num_tokens_) *
               max_blocks_per_sequence_),
-          sampled_token_ids_(max_batch_size_),
+          sampled_token_ids_(max_num_tokens_),
           key_cache_(cache_elements()),
           value_cache_(cache_elements()),
           residual_a_(batch_channels()),
           residual_b_(batch_channels()),
           normalized_(batch_channels()),
-          qkv_(static_cast<std::size_t>(max_batch_size_) *
+          qkv_(static_cast<std::size_t>(max_num_tokens_) *
                3 * config_.channels),
           query_(batch_channels()),
           key_(batch_channels()),
           value_(batch_channels()),
           attention_(batch_channels()),
           projected_(batch_channels()),
-          hidden_(static_cast<std::size_t>(max_batch_size_) *
+          hidden_(static_cast<std::size_t>(max_num_tokens_) *
                   4 * config_.channels),
-          logits_(static_cast<std::size_t>(max_batch_size_) *
+          logits_(static_cast<std::size_t>(max_num_tokens_) *
                   config_.padded_vocab_size) {
         check_cuda(
             cudaMemcpyAsync(
@@ -419,42 +426,36 @@ public:
                 "CUDA ModelRunner received an empty schedule");
         }
         if (output.items.size() >
-            static_cast<std::size_t>(max_batch_size_)) {
+            static_cast<std::size_t>(max_num_sequences_)) {
             throw std::out_of_range(
                 "scheduled request count exceeds CUDA runner capacity");
         }
-
-        std::size_t max_micro_steps = 0;
-        for (const ScheduledItem& item : output.items) {
-            if (item.sequence == nullptr || item.num_scheduled_tokens == 0) {
-                throw std::invalid_argument("scheduled item is invalid");
-            }
-            max_micro_steps =
-                std::max(max_micro_steps, item.num_scheduled_tokens);
+        if (output.num_batched_tokens >
+            static_cast<std::size_t>(max_num_tokens_)) {
+            throw std::out_of_range(
+                "scheduled token count exceeds CUDA runner capacity");
         }
 
         std::vector<int> sampled(output.items.size(), -1);
         last_model_inputs_.clear();
-        last_model_inputs_.reserve(max_micro_steps);
         last_host_to_device_bytes_ = 0;
-        for (std::size_t micro_step = 0; micro_step < max_micro_steps;
-             ++micro_step) {
-            ModelInput input = prepare_model_input(
-                output, micro_step, block_manager_, max_context_length_,
-                max_blocks_per_sequence_, num_pages_);
-            const std::vector<int> micro_samples = forward(input);
-            for (std::size_t row = 0; row < input.batch_size(); ++row) {
-                const std::size_t item_index =
-                    input.scheduled_item_indices[row];
-                const Sequence& sequence =
-                    *output.items[item_index].sequence;
-                if (static_cast<std::size_t>(input.positions[row]) + 1 ==
-                    sequence.num_tokens()) {
-                    sampled[item_index] = micro_samples[row];
-                }
+        ModelInput input = prepare_packed_model_input(
+            output, block_manager_, max_context_length_,
+            max_blocks_per_sequence_, num_pages_);
+        const std::vector<int> token_samples = forward(input);
+        for (std::size_t item_index = 0;
+             item_index < output.items.size(); ++item_index) {
+            const ScheduledItem& item = output.items[item_index];
+            const Sequence& sequence = *item.sequence;
+            if (sequence.num_computed_tokens() +
+                    item.num_scheduled_tokens ==
+                sequence.num_tokens()) {
+                const std::size_t final_token =
+                    input.query_start_locations[item_index + 1] - 1;
+                sampled[item_index] = token_samples[final_token];
             }
-            last_model_inputs_.push_back(std::move(input));
         }
+        last_model_inputs_.push_back(std::move(input));
         return sampled;
     }
 
@@ -496,7 +497,7 @@ private:
     }
 
     std::size_t batch_channels() const {
-        return static_cast<std::size_t>(max_batch_size_) * config_.channels;
+        return static_cast<std::size_t>(max_num_tokens_) * config_.channels;
     }
 
     std::size_t cache_elements() const {
@@ -528,8 +529,8 @@ private:
 
     std::vector<int> forward(const ModelInput& input) {
         const int batch_size = model_input_checked_int(
-            input.batch_size(), "CUDA micro batch is too large");
-        if (batch_size <= 0 || batch_size > max_batch_size_ ||
+            input.batch_size(), "CUDA packed batch is too large");
+        if (batch_size <= 0 || batch_size > max_num_tokens_ ||
             input.positions.size() != input.batch_size() ||
             input.context_lengths.size() != input.batch_size() ||
             input.slot_mapping.size() != input.batch_size() ||
@@ -685,7 +686,8 @@ private:
 
     GPT2CudaConfig config_;
     BlockManager& block_manager_;
-    int max_batch_size_;
+    int max_num_sequences_;
+    int max_num_tokens_;
     int max_context_length_;
     int max_blocks_per_sequence_;
     int num_pages_;
@@ -722,10 +724,13 @@ private:
 GPT2CudaModelRunner::GPT2CudaModelRunner(
     GPT2CudaConfig config, const float* host_parameters,
     std::size_t num_parameters, BlockManager& block_manager,
-    std::size_t max_num_sequences, std::size_t max_context_length)
+    std::size_t max_num_sequences,
+    std::size_t max_num_batched_tokens,
+    std::size_t max_context_length)
     : impl_(std::make_unique<Impl>(
           config, host_parameters, num_parameters, block_manager,
-          max_num_sequences, max_context_length)) {}
+          max_num_sequences, max_num_batched_tokens,
+          max_context_length)) {}
 
 GPT2CudaModelRunner::~GPT2CudaModelRunner() = default;
 

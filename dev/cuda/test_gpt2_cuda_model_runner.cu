@@ -41,7 +41,10 @@ static StepValidation validate_and_commit(
     const SchedulerOutput& output) {
     const std::vector<int> sampled = runner.run(output);
     const std::vector<ModelInput>& inputs = runner.last_model_inputs();
-    assert(!inputs.empty());
+    assert(inputs.size() == 1);
+    assert(inputs.front().batch_size() == output.num_batched_tokens);
+    assert(inputs.front().query_start_locations.size() ==
+           output.items.size() + 1);
 
     StepValidation validation;
     for (const ModelInput& input : inputs) {
@@ -125,7 +128,8 @@ int main() {
     };
     GPT2CudaModelRunner runner(
         cuda_config, model.params_memory, model.num_parameters,
-        block_manager, max_num_sequences, max_context_length);
+        block_manager, max_num_sequences,
+        /*max_num_batched_tokens=*/8, max_context_length);
     GPT2DenseInferenceWorkspace reference_workspace(
         model.config, 1, max_context_length);
 
@@ -134,7 +138,7 @@ int main() {
         SamplingParams{/*max_new_tokens=*/2, -1, false});
     auto request2 = std::make_shared<Sequence>(
         2, make_prompt(5, 2),
-        SamplingParams{/*max_new_tokens=*/2, -1, false});
+        SamplingParams{/*max_new_tokens=*/1, -1, false});
     auto request3 = std::make_shared<Sequence>(
         3, make_prompt(17, 3),
         SamplingParams{/*max_new_tokens=*/1, -1, false});
@@ -152,7 +156,10 @@ int main() {
 
         SchedulerOutput output = scheduler.schedule();
         assert(!output.items.empty());
-        if (output.items.size() == 2) saw_mixed_batch = true;
+        if (output.items.size() == 2 &&
+            output.items[0].phase != output.items[1].phase) {
+            saw_mixed_batch = true;
+        }
         for (const ScheduledItem& item : output.items) {
             if (item.sequence->request_id() == 3) {
                 for (int block_id : item.sequence->block_table()) {

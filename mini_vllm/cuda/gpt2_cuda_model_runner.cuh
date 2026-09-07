@@ -25,6 +25,7 @@ public:
         GPT2CudaConfig config, const float* host_parameters,
         std::size_t num_parameters, BlockManager& block_manager,
         std::size_t max_num_sequences,
+        std::size_t max_num_batched_tokens,
         std::size_t max_context_length);
     ~GPT2CudaModelRunner();
 
