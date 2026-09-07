@@ -30,6 +30,7 @@ mini_vllm_gpt2_demo
 benchmark_gpt2_serving
 test_cuda_paged_attention
 test_gpt2_cuda_model_runner
+test_gpt2_cuda_prefix_cache
 benchmark_cuda_paged_attention
 benchmark_gpt2_cuda_serving
 dev/cuda/*_forward

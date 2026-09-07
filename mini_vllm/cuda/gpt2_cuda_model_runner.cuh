@@ -24,7 +24,7 @@ struct GPT2CudaConfig {
     int num_heads = 0;
     int channels = 0;
     CudaDataType data_type = CudaDataType::FP32;
-    bool enable_fused_residual_layernorm = true;
+    bool enable_fused_residual_layernorm = false;
     bool enable_cuda_graph = false;
 };
 

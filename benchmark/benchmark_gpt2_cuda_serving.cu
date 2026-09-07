@@ -40,7 +40,7 @@ struct Options {
     int repeats = 3;
     std::size_t token_budget = 64;
     CudaDataType data_type = CudaDataType::FP32;
-    bool enable_fusion = true;
+    bool enable_fusion = false;
     bool enable_cuda_graph = false;
     std::string json_path =
         "benchmark/results/gpt2_cuda_packed_rtx3090.json";
@@ -209,6 +209,8 @@ Options parse_options(int argc, char** argv) {
             }
         } else if (argument == "--disable-fusion") {
             options.enable_fusion = false;
+        } else if (argument == "--fusion") {
+            options.enable_fusion = true;
         } else if (argument == "--cuda-graph") {
             options.enable_cuda_graph = true;
         } else if (argument == "--json") {
