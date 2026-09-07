@@ -1,4 +1,58 @@
-# llm.c
+# Mini-vLLM in C++
+
+基于 llm.c GPT-2 实现构建的教学型 LLM 推理引擎。本项目用 C++ 重写推理路径，
+并沿着 vLLM 的核心抽象逐步实现增量解码、Paged KV Cache、请求调度和连续批处理。
+
+项目当前处于 CPU 正确性原型阶段。Scheduler 控制面和异长动态 Batch 执行原语均已完成，
+下一阶段将二者接入 `GPT2ModelRunner`，随后实现 CUDA PagedAttention 和系统化性能测试。
+
+## 已实现
+
+- GPT-2 单 Token 增量前向与逐层 KV Cache
+- 固定大小 KV Block Pool、逻辑 Block Table、分配/释放/复用
+- Sequence 状态机与 Token 记账
+- Token Budget 驱动的 Scheduler 和 Chunked Prefill
+- 请求动态加入、完成退出和 Block 回收
+- 支持独立 context length 的异长动态 Batch PagedAttention
+- 独立 dense attention reference 和 GPT-2 全词表 logits 回归测试
+
+模型级回归包含两个异长请求，活跃批次经历 `1 → 2 → 1`。测试覆盖分页边界和
+反向、交错物理页映射，在每个有效位置比较 50,257 个词表 logits，当前最大绝对误差为 0。
+
+## 构建与验证
+
+需要 GPT-2 124M checkpoint `gpt2_124M.bin` 才能运行模型级测试；控制面和算子级测试
+不依赖模型权重。
+
+```bash
+make test_minivllm_control_plane mini_vllm_demo test_gpt2_paged_inference
+./test_minivllm_control_plane
+./mini_vllm_demo
+OMP_NUM_THREADS=16 ./test_gpt2_paged_inference
+```
+
+主要代码：
+
+- `mini_vllm/sequence.hpp`：请求状态和 Token 生命周期
+- `mini_vllm/block_manager.hpp`：KV Block 所有权与回收
+- `mini_vllm/scheduler.hpp`：连续批处理控制面
+- `paged_kv_cache.hpp`：分页 KV Cache 和 CPU PagedAttention
+- `train_gpt2.cpp`：GPT-2 增量推理路径
+- `doc/mini_vllm_roadmap_zh.md`：实现状态、实验结果和学习路线
+
+## 项目来源
+
+本项目基于 Andrej Karpathy 的 [llm.c](https://github.com/karpathy/llm.c)，保留原项目
+MIT License 和 Git 历史。Mini-vLLM 部分参考
+[vLLM](https://github.com/vllm-project/vllm) 与
+[nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm) 的模块边界独立实现，
+没有复制 nano-vLLM 源代码。
+
+---
+
+## Upstream llm.c documentation
+
+### llm.c
 
 LLMs in simple, pure C/CUDA with no need for 245MB of PyTorch or 107MB of cPython. Current focus is on pretraining, in particular reproducing the [GPT-2](https://github.com/openai/gpt-2) and [GPT-3](https://arxiv.org/abs/2005.14165) miniseries, along with a parallel PyTorch reference implementation in [train_gpt2.py](train_gpt2.py). You'll recognize this file as a slightly tweaked [nanoGPT](https://github.com/karpathy/nanoGPT), an earlier project of mine. Currently, llm.c is a bit faster than PyTorch Nightly (by about 7%). In addition to the bleeding edge mainline code in [train_gpt2.cu](train_gpt2.cu), we have a simple reference CPU fp32 implementation in ~1,000 lines of clean code in one file [train_gpt2.c](train_gpt2.c). I'd like this repo to only maintain C and CUDA code. Ports to other languages or repos are very welcome, but should be done in separate repos, and I am happy to link to them below in the "notable forks" section. Developer coordination happens in the [Discussions](https://github.com/karpathy/llm.c/discussions) and on Discord, either the `#llmc` channel on the [Zero to Hero](https://discord.gg/3zy8kqD9Cp) channel, or on `#llmdotc` on [GPU MODE](https://discord.gg/gpumode) Discord.
 

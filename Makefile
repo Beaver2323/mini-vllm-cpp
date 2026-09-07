@@ -1,5 +1,7 @@
 CC ?= clang
+CXX ?= clang++
 CFLAGS = -Ofast -Wno-unused-result -Wno-ignored-pragmas -Wno-unknown-attributes
+CXXFLAGS = $(CFLAGS) -std=c++17
 LDFLAGS =
 LDLIBS = -lm
 INCLUDES =
@@ -89,8 +91,10 @@ else
     NVCC :=
   endif
   CC := cl
+  CXX := cl
   CFLAGS = /Idev /Zi /nologo /W4 /WX- /diagnostics:column /sdl /O2 /Oi /Ot /GL /D _DEBUG /D _CONSOLE /D _UNICODE /D UNICODE /Gm- /EHsc /MD /GS /Gy /fp:fast /Zc:wchar_t /Zc:forScope /Zc:inline /permissive- \
    /external:W3 /Gd /TP /wd4996 /Fd$@.pdb /FC /openmp:llvm
+  CXXFLAGS = $(CFLAGS) /std:c++17
   LDFLAGS :=
   LDLIBS :=
   INCLUDES :=
@@ -244,10 +248,10 @@ else
 endif
 
 # PHONY means these targets will always be executed
-.PHONY: all train_gpt2 test_gpt2 train_gpt2cu test_gpt2cu train_gpt2fp32cu test_gpt2fp32cu profile_gpt2cu
+.PHONY: all train_gpt2 test_gpt2 train_gpt2_cpp mini_vllm_demo test_minivllm_control_plane test_gpt2_paged_inference train_gpt2cu test_gpt2cu train_gpt2fp32cu test_gpt2fp32cu profile_gpt2cu
 
 # Add targets
-TARGETS = train_gpt2 test_gpt2
+TARGETS = train_gpt2 test_gpt2 train_gpt2_cpp
 
 # Conditional inclusion of CUDA targets
 ifeq ($(NVCC),)
@@ -266,6 +270,18 @@ train_gpt2: train_gpt2.c
 
 test_gpt2: test_gpt2.c
 	$(CC) $(CFLAGS) $(INCLUDES) $(LDFLAGS) $^ $(LDLIBS) $(OUTPUT_FILE)
+
+train_gpt2_cpp: train_gpt2.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(LDFLAGS) $< $(LDLIBS) $(OUTPUT_FILE)
+
+test_minivllm_control_plane: dev/test_mini_vllm_control_plane.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(LDFLAGS) $< $(LDLIBS) $(OUTPUT_FILE)
+
+mini_vllm_demo: mini_vllm/demo.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(LDFLAGS) $< $(LDLIBS) $(OUTPUT_FILE)
+
+test_gpt2_paged_inference: dev/test_gpt2_paged_inference.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(LDFLAGS) $< $(LDLIBS) $(OUTPUT_FILE)
 
 $(NVCC_CUDNN): llmc/cudnn_att.cpp
 	$(NVCC) -c $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_INCLUDES) -o $@

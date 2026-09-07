@@ -1,0 +1,23 @@
+% Replace only the original llm.c project section. Uses existing resume macros.
+\projectHeading
+{基于 llm.c 的 Mini-vLLM 推理引擎}
+{C/C++ / OpenMP}
+
+\begin{itemize}
+    \item \textbf{增量解码链路：}
+    基于 llm.c 扩展 GPT-2 单 Token 前向，复用模型权重及基础算子，
+    按绝对位置更新位置编码并缓存各层历史 K/V，避免生成阶段重复计算历史 Token 的投影与前馈网络。
+
+    \item \textbf{分页缓存管理：}
+    实现固定大小 CPU KV Cache Block Pool、逻辑 Block Table 与 Block Manager，
+    支持缓存块按需分配、请求完成释放、跨请求复用及异常状态检测。
+
+    \item \textbf{请求调度与 Paged Attention：}
+    参考 vLLM 控制面设计 Sequence 状态及 Token Budget 驱动的 Scheduler，
+    实现 Chunked Prefill、活跃请求优先调度以及请求动态加入和完成退出；
+    实现页表寻址的 K/V 写入、历史注意力计算及 Softmax 加权聚合，
+    通过 OpenMP 并行处理 batch 与 attention head；
+    在多层、多头、跨页及非连续页映射场景下与独立稠密参考对齐；
+    构造活跃批次 $1\rightarrow2\rightarrow1$ 的异长请求动态加入/退出场景，
+    完成长达 33 Token 的逐位置全词表 logits 一致性验证。
+\end{itemize}
