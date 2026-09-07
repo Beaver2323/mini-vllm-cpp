@@ -117,6 +117,7 @@ static StepValidation validate_and_commit(
 int main(int argc, char** argv) {
     CudaDataType data_type = CudaDataType::FP32;
     bool enable_fusion = true;
+    bool enable_cuda_graph = false;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
         if (argument == "--precision" && index + 1 < argc) {
@@ -131,10 +132,13 @@ int main(int argc, char** argv) {
             }
         } else if (argument == "--disable-fusion") {
             enable_fusion = false;
+        } else if (argument == "--cuda-graph") {
+            enable_cuda_graph = true;
         } else {
             throw std::invalid_argument(
                 "usage: test_gpt2_cuda_model_runner "
-                "[--precision fp32|fp16|bf16] [--disable-fusion]");
+                "[--precision fp32|fp16|bf16] [--disable-fusion] "
+                "[--cuda-graph]");
         }
     }
 
@@ -158,6 +162,7 @@ int main(int argc, char** argv) {
         model.config.channels,
         data_type,
         enable_fusion,
+        enable_cuda_graph,
     };
     GPT2CudaModelRunner runner(
         cuda_config, model.params_memory, model.num_parameters,
@@ -219,6 +224,7 @@ int main(int argc, char** argv) {
     assert(saw_mixed_batch);
     assert(saw_reused_block);
     assert(block_manager.num_free_blocks() == block_manager.num_blocks());
+    if (enable_cuda_graph) assert(runner.num_cuda_graphs() > 0);
     assert(global_max_abs_logit_error <
            (data_type == CudaDataType::FP32 ? 0.2 : 3.0));
     if (data_type != CudaDataType::BF16) {
@@ -231,6 +237,7 @@ int main(int argc, char** argv) {
             (data_type == CudaDataType::BF16 ? "bf16" : "fp32"))
         << ", residual_layernorm_fusion="
         << (enable_fusion ? "on" : "off")
+        << ", cuda_graph=" << (enable_cuda_graph ? "on" : "off")
         << ", full GPU decode, mixed batch, cross-page growth, block reuse\n"
         << "max_abs_logit_error=" << global_max_abs_logit_error << '\n'
         << "argmax_mismatches=" << total_argmax_mismatches << '\n'
@@ -240,7 +247,8 @@ int main(int argc, char** argv) {
         << " metadata_h2d_bytes=" << total_metadata_bytes << '\n'
         << "request_lengths=" << request1->num_tokens() << ','
         << request2->num_tokens() << ',' << request3->num_tokens()
-        << " free_blocks=" << block_manager.num_free_blocks() << '\n';
+        << " free_blocks=" << block_manager.num_free_blocks()
+        << " graph_cache_size=" << runner.num_cuda_graphs() << '\n';
 
     gpt2_free(&model);
     return 0;

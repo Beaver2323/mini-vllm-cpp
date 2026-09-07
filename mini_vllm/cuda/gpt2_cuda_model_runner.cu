@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -631,6 +632,17 @@ public:
                    "finish CUDA ModelRunner initialization");
     }
 
+    ~Impl() {
+        for (auto& item : cuda_graphs_) {
+            if (item.second.executable != nullptr) {
+                cudaGraphExecDestroy(item.second.executable);
+            }
+            if (item.second.graph != nullptr) {
+                cudaGraphDestroy(item.second.graph);
+            }
+        }
+    }
+
     std::vector<int> run(const SchedulerOutput& output) {
         if (output.items.empty()) {
             throw std::invalid_argument(
@@ -705,7 +717,7 @@ public:
             projected_.bytes() + hidden_.bytes() + logits_.bytes();
     }
     CudaDataType data_type() const { return config_.data_type; }
-    std::size_t num_cuda_graphs() const { return 0; }
+    std::size_t num_cuda_graphs() const { return cuda_graphs_.size(); }
 
 private:
     static std::size_t sum(const std::vector<std::size_t>& values) {
@@ -856,6 +868,32 @@ private:
         copy_metadata(
             block_tables_, input.block_tables, "copy block tables");
 
+        bool replay_existing_graph = false;
+        bool capture_new_graph = false;
+        if (config_.enable_cuda_graph) {
+            const auto graph = cuda_graphs_.find(batch_size);
+            if (graph != cuda_graphs_.end()) {
+                check_cuda(
+                    cudaGraphLaunch(graph->second.executable, stream_.get()),
+                    "launch cached CUDA graph");
+                replay_existing_graph = true;
+            } else {
+                // Stream capture cannot begin behind uncaptured metadata copies.
+                // The first use of each Token Batch therefore synchronizes once;
+                // subsequent replays keep metadata and graph launch ordered on
+                // the same stream without this synchronization.
+                check_cuda(
+                    cudaStreamSynchronize(stream_.get()),
+                    "prepare CUDA graph capture");
+                check_cuda(
+                    cudaStreamBeginCapture(
+                        stream_.get(), cudaStreamCaptureModeThreadLocal),
+                    "begin CUDA graph capture");
+                capture_new_graph = true;
+            }
+        }
+
+        if (!replay_existing_graph) {
         const int channels = config_.channels;
         const int hidden_width = 4 * channels;
         const int channel_elements = batch_size * channels;
@@ -1034,6 +1072,28 @@ private:
             logits_.get(), sampled_token_ids_.get(), batch_size,
             config_.vocab_size, config_.padded_vocab_size);
         check_last_kernel("argmax_kernel");
+        }
+
+        if (capture_new_graph) {
+            CudaGraphEntry entry;
+            check_cuda(
+                cudaStreamEndCapture(stream_.get(), &entry.graph),
+                "end CUDA graph capture");
+            check_cuda(
+                cudaGraphInstantiate(
+                    &entry.executable, entry.graph, nullptr, nullptr, 0),
+                "instantiate CUDA graph");
+            const auto inserted =
+                cuda_graphs_.emplace(batch_size, entry);
+            if (!inserted.second) {
+                cudaGraphExecDestroy(entry.executable);
+                cudaGraphDestroy(entry.graph);
+                throw std::logic_error("duplicate CUDA graph batch key");
+            }
+            check_cuda(
+                cudaGraphLaunch(entry.executable, stream_.get()),
+                "launch newly captured CUDA graph");
+        }
 
         std::vector<int> sampled(batch_size);
         check_cuda(
@@ -1098,6 +1158,12 @@ private:
     std::vector<ModelInput> last_model_inputs_;
     std::size_t last_host_to_device_bytes_ = 0;
     int last_batch_size_ = 0;
+
+    struct CudaGraphEntry {
+        cudaGraph_t graph = nullptr;
+        cudaGraphExec_t executable = nullptr;
+    };
+    std::unordered_map<int, CudaGraphEntry> cuda_graphs_;
 };
 
 GPT2CudaModelRunner::GPT2CudaModelRunner(

@@ -41,6 +41,7 @@ struct Options {
     std::size_t token_budget = 64;
     CudaDataType data_type = CudaDataType::FP32;
     bool enable_fusion = true;
+    bool enable_cuda_graph = false;
     std::string json_path =
         "benchmark/results/gpt2_cuda_packed_rtx3090.json";
     std::string csv_path =
@@ -122,7 +123,7 @@ double percentile(std::vector<double> values, double fraction) {
 
 RunResult run_once(
     GPT2& model, std::size_t token_budget, CudaDataType data_type,
-    bool enable_fusion) {
+    bool enable_fusion, bool enable_cuda_graph) {
     constexpr std::size_t max_num_sequences = 4;
     constexpr std::size_t max_context_length = 64;
     constexpr std::size_t max_new_tokens = 4;
@@ -135,6 +136,7 @@ RunResult run_once(
         model.config.channels,
         data_type,
         enable_fusion,
+        enable_cuda_graph,
     };
     GPT2CudaEngine engine(
         config, model.params_memory, model.num_parameters,
@@ -223,6 +225,8 @@ Options parse_options(int argc, char** argv) {
             }
         } else if (argument == "--disable-fusion") {
             options.enable_fusion = false;
+        } else if (argument == "--cuda-graph") {
+            options.enable_cuda_graph = true;
         } else if (argument == "--json") {
             options.json_path = value();
         } else if (argument == "--csv") {
@@ -267,7 +271,7 @@ void write_json(
     const std::string& path, const cudaDeviceProp& properties,
     int driver_version, int runtime_version,
     std::size_t token_budget, CudaDataType data_type,
-    bool enable_fusion,
+    bool enable_fusion, bool enable_cuda_graph,
     const std::vector<RunResult>& runs) {
     std::vector<double> total_ms;
     std::vector<double> throughput;
@@ -305,6 +309,8 @@ void write_json(
          << "\",\n"
          << "    \"residual_layernorm_fusion\": "
          << (enable_fusion ? "true" : "false") << ",\n"
+         << "    \"cuda_graph\": "
+         << (enable_cuda_graph ? "true" : "false") << ",\n"
          << "    \"scheduler_token_budget\": " << token_budget << ",\n"
          << "    \"driver_version\": " << driver_version << ",\n"
          << "    \"runtime_version\": " << runtime_version << ",\n"
@@ -396,7 +402,7 @@ int main(int argc, char** argv) {
             cpu_greedy_reference(model);
         const RunResult warmup = run_once(
             model, options.token_budget, options.data_type,
-            options.enable_fusion);
+            options.enable_fusion, options.enable_cuda_graph);
         if (warmup.generated_tokens != expected_tokens) {
             throw std::runtime_error(
                 "CUDA warmup tokens differ from CPU full-prefix reference");
@@ -405,7 +411,7 @@ int main(int argc, char** argv) {
         for (int repeat = 0; repeat < options.repeats; ++repeat) {
             RunResult run = run_once(
                 model, options.token_budget, options.data_type,
-                options.enable_fusion);
+                options.enable_fusion, options.enable_cuda_graph);
             if (run.generated_tokens != warmup.generated_tokens) {
                 throw std::runtime_error(
                     "CUDA benchmark generated tokens changed across runs");
@@ -426,7 +432,7 @@ int main(int argc, char** argv) {
         write_json(
             options.json_path, properties, driver_version,
             runtime_version, options.token_budget, options.data_type,
-            options.enable_fusion, runs);
+            options.enable_fusion, options.enable_cuda_graph, runs);
         write_csv(options.csv_path, runs);
         gpt2_free(&model);
         std::cout << "GPU 服务 Benchmark 原始结果已写入 "
