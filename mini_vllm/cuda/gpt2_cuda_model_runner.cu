@@ -430,6 +430,71 @@ __global__ void residual_layernorm_kernel(
     }
 }
 
+__global__ void residual_layernorm_half2_kernel(
+    __half* residual_output, __half* normalized_output,
+    const __half* left, const __half* right,
+    const __half* weight, const __half* bias,
+    int batch_size, int channels) {
+    const int row = blockIdx.x;
+    const int thread = threadIdx.x;
+    if (row >= batch_size) return;
+    __shared__ float reduction[kThreads];
+
+    const int pair_width = channels / 2;
+    const std::size_t row_base =
+        static_cast<std::size_t>(row) * pair_width;
+    __half2* residual2 = reinterpret_cast<__half2*>(residual_output);
+    __half2* normalized2 = reinterpret_cast<__half2*>(normalized_output);
+    const __half2* left2 = reinterpret_cast<const __half2*>(left);
+    const __half2* right2 = reinterpret_cast<const __half2*>(right);
+    const __half2* weight2 = reinterpret_cast<const __half2*>(weight);
+    const __half2* bias2 = reinterpret_cast<const __half2*>(bias);
+
+    float local_sum = 0.0f;
+    for (int pair = thread; pair < pair_width; pair += blockDim.x) {
+        const std::size_t index = row_base + pair;
+        const __half2 residual = __hadd2(left2[index], right2[index]);
+        residual2[index] = residual;
+        const float2 values = __half22float2(residual);
+        local_sum += values.x + values.y;
+    }
+    reduction[thread] = local_sum;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
+        if (thread < stride) reduction[thread] += reduction[thread + stride];
+        __syncthreads();
+    }
+    const float mean = reduction[0] / channels;
+    __syncthreads();
+
+    float local_variance = 0.0f;
+    for (int pair = thread; pair < pair_width; pair += blockDim.x) {
+        const float2 values = __half22float2(residual2[row_base + pair]);
+        const float shifted_x = values.x - mean;
+        const float shifted_y = values.y - mean;
+        local_variance += shifted_x * shifted_x + shifted_y * shifted_y;
+    }
+    reduction[thread] = local_variance;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
+        if (thread < stride) reduction[thread] += reduction[thread + stride];
+        __syncthreads();
+    }
+    const float inverse_stddev =
+        rsqrtf(reduction[0] / channels + 1e-5f);
+    __syncthreads();
+
+    for (int pair = thread; pair < pair_width; pair += blockDim.x) {
+        const std::size_t index = row_base + pair;
+        const float2 values = __half22float2(residual2[index]);
+        const float2 weights = __half22float2(weight2[pair]);
+        const float2 biases = __half22float2(bias2[pair]);
+        normalized2[index] = __floats2half2_rn(
+            (values.x - mean) * inverse_stddev * weights.x + biases.x,
+            (values.y - mean) * inverse_stddev * weights.y + biases.y);
+    }
+}
+
 template <typename T>
 __global__ void add_bias_kernel(
     T* output, const T* bias, int batch_size, int width) {
@@ -846,6 +911,32 @@ private:
     }
 
     template <typename T>
+    void fused_residual_layernorm(
+        T* residual_output, T* normalized_output,
+        const T* left, const T* right, const T* weight, const T* bias,
+        int batch_size, int channels) {
+        if constexpr (std::is_same<T, __half>::value) {
+            if (channels % 2 == 0) {
+                residual_layernorm_half2_kernel<<<
+                    batch_size, kThreads, 0, stream_.get()>>>(
+                    residual_output, normalized_output, left, right,
+                    weight, bias, batch_size, channels);
+            } else {
+                residual_layernorm_kernel<T><<<
+                    batch_size, kThreads, 0, stream_.get()>>>(
+                    residual_output, normalized_output, left, right,
+                    weight, bias, batch_size, channels);
+            }
+        } else {
+            residual_layernorm_kernel<T><<<
+                batch_size, kThreads, 0, stream_.get()>>>(
+                residual_output, normalized_output, left, right,
+                weight, bias, batch_size, channels);
+        }
+        check_last_kernel("fused residual layernorm");
+    }
+
+    template <typename T>
     std::vector<int> forward(const ModelInput& input) {
         const int batch_size = model_input_checked_int(
             input.batch_size(), "CUDA packed batch is too large");
@@ -960,8 +1051,7 @@ private:
                     static_cast<std::size_t>(layer) * channels,
                 batch_size, channels, channels);
             if (config_.enable_fused_residual_layernorm) {
-                residual_layernorm_kernel<T><<<
-                    batch_size, kThreads, 0, stream_.get()>>>(
+                fused_residual_layernorm(
                     residual_b_.get<T>(), normalized_.get<T>(),
                     residual_a_.get<T>(), projected_.get<T>(),
                     parameters_view.ln2w +
@@ -1035,8 +1125,7 @@ private:
                     ? parameters_view.ln1b +
                         static_cast<std::size_t>(layer + 1) * channels
                     : parameters_view.lnfb;
-                residual_layernorm_kernel<T><<<
-                    batch_size, kThreads, 0, stream_.get()>>>(
+                fused_residual_layernorm(
                     residual_a_.get<T>(), normalized_.get<T>(),
                     residual_b_.get<T>(), projected_.get<T>(),
                     norm_weight, norm_bias, batch_size, channels);
