@@ -105,6 +105,9 @@ __global__ void paged_attention_kernel(
         __syncthreads();
     }
     const float maximum = reduction[0];
+    // Every thread must finish reading the maximum before reduction[] is
+    // reused for the softmax sum below.
+    __syncthreads();
 
     float local_sum = 0.0f;
     for (int token = thread; token < context_length;
@@ -122,6 +125,7 @@ __global__ void paged_attention_kernel(
         __syncthreads();
     }
     const float inverse_sum = 1.0f / reduction[0];
+    __syncthreads();
 
     for (int dimension = thread;
          dimension < head_size; dimension += blockDim.x) {
