@@ -296,7 +296,7 @@ test_cuda_paged_attention: dev/cuda/test_paged_attention.cu mini_vllm/cuda/paged
 	$(NVCC) $(NVCC_FLAGS) $^ $(NVCC_INCLUDES) $(CUDA_OUTPUT_FILE)
 
 benchmark_cuda_paged_attention: benchmark/benchmark_cuda_paged_attention.cu mini_vllm/cuda/paged_attention.cu
-	$(NVCC) $(NVCC_FLAGS) -DMINI_VLLM_GIT_COMMIT=\"$(shell git rev-parse --short HEAD 2>/dev/null)\" $^ $(NVCC_INCLUDES) $(CUDA_OUTPUT_FILE)
+	$(NVCC) $(NVCC_FLAGS) -DMINI_VLLM_GIT_COMMIT=\"$(shell git rev-parse --short HEAD 2>/dev/null)\" -DMINI_VLLM_GPU_ARCH=\"$(if $(GPU_COMPUTE_CAPABILITY),sm_$(GPU_COMPUTE_CAPABILITY),nvcc_default)\" $^ $(NVCC_INCLUDES) $(CUDA_OUTPUT_FILE)
 
 $(NVCC_CUDNN): llmc/cudnn_att.cpp
 	$(NVCC) -c $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_INCLUDES) -o $@

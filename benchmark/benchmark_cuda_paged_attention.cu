@@ -21,6 +21,10 @@
 #define MINI_VLLM_GIT_COMMIT "unknown"
 #endif
 
+#ifndef MINI_VLLM_GPU_ARCH
+#define MINI_VLLM_GPU_ARCH "unknown"
+#endif
+
 using mini_vllm::cuda::kPagedAttentionPageSize;
 using mini_vllm::cuda::paged_attention_decode;
 
@@ -233,6 +237,8 @@ static void write_json(
          << "    \"gpu\": \"" << json_escape(properties.name) << "\",\n"
          << "    \"compute_capability\": \""
          << properties.major << '.' << properties.minor << "\",\n"
+         << "    \"compiled_gpu_arch\": \""
+         << MINI_VLLM_GPU_ARCH << "\",\n"
          << "    \"driver_version\": " << driver_version << ",\n"
          << "    \"runtime_version\": " << runtime_version << ",\n"
          << "    \"num_heads\": 12,\n"
