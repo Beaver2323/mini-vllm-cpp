@@ -290,7 +290,7 @@ test_gpt2_engine: dev/test_gpt2_engine.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(LDFLAGS) $< $(LDLIBS) $(OUTPUT_FILE)
 
 benchmark_gpt2_serving: benchmark/benchmark_gpt2_serving.cpp
-	$(CXX) $(CXXFLAGS) -DMINI_VLLM_GIT_COMMIT=\"$(shell git rev-parse --short HEAD 2>/dev/null)\" $(INCLUDES) $(LDFLAGS) $< $(LDLIBS) $(OUTPUT_FILE)
+	$(CXX) $(CXXFLAGS) -DMINI_VLLM_GIT_COMMIT=\"$(shell git rev-parse --short HEAD 2>/dev/null)\" -DMINI_VLLM_BUILD_FLAGS='"$(CXXFLAGS)"' $(INCLUDES) $(LDFLAGS) $< $(LDLIBS) $(OUTPUT_FILE)
 
 $(NVCC_CUDNN): llmc/cudnn_att.cpp
 	$(NVCC) -c $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_INCLUDES) -o $@

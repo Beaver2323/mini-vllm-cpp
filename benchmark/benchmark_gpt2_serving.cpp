@@ -26,6 +26,9 @@
 #ifndef MINI_VLLM_GIT_COMMIT
 #define MINI_VLLM_GIT_COMMIT "unknown"
 #endif
+#ifndef MINI_VLLM_BUILD_FLAGS
+#define MINI_VLLM_BUILD_FLAGS "unknown"
+#endif
 
 using namespace mini_vllm;
 using Clock = std::chrono::steady_clock;
@@ -440,8 +443,12 @@ static void write_json(
          << "    \"openmp_threads\": " << openmp_threads() << ",\n"
          << "    \"compiler\": \"" << json_escape(__VERSION__) << "\",\n"
          << "    \"git_commit\": \"" << MINI_VLLM_GIT_COMMIT << "\",\n"
+         << "    \"build_flags\": \""
+         << json_escape(MINI_VLLM_BUILD_FLAGS) << "\",\n"
          << "    \"arrival_policy\": \"all_requests_at_time_zero\",\n"
          << "    \"timing_clock\": \"steady_clock\",\n"
+         << "    \"scheduler_token_budget\": 64,\n"
+         << "    \"kv_block_size\": " << PAGE_SIZE << ",\n"
          << "    \"warmup_runs_per_mode\": 1,\n"
          << "    \"timed_repeats\": " << options.repeats << "\n"
          << "  },\n"
@@ -451,7 +458,15 @@ static void write_json(
              << ", \"prompt_tokens\": "
              << workload[i].prompt_tokens.size()
              << ", \"output_tokens\": "
-             << workload[i].max_new_tokens << "}"
+             << workload[i].max_new_tokens
+             << ", \"prompt_token_ids\": [";
+        for (std::size_t token_index = 0;
+             token_index < workload[i].prompt_tokens.size();
+             ++token_index) {
+            if (token_index != 0) file << ", ";
+            file << workload[i].prompt_tokens[token_index];
+        }
+        file << "]}"
              << (i + 1 == workload.size() ? "\n" : ",\n");
     }
     file << "  ],\n  \"runs\": [\n";
@@ -474,6 +489,20 @@ static void write_json(
              << run.latency_p95_ms << ",\n"
              << "      \"peak_kv_blocks\": "
              << run.peak_kv_blocks << ",\n"
+             << "      \"generated_token_ids\": [";
+        for (std::size_t request_index = 0;
+             request_index < run.outputs.size(); ++request_index) {
+            if (request_index != 0) file << ", ";
+            file << '[';
+            for (std::size_t token_index = 0;
+                 token_index < run.outputs[request_index].size();
+                 ++token_index) {
+                if (token_index != 0) file << ", ";
+                file << run.outputs[request_index][token_index];
+            }
+            file << ']';
+        }
+        file << "],\n"
              << "      \"requests\": [\n";
         for (std::size_t j = 0; j < run.requests.size(); ++j) {
             const RequestMetrics& request = run.requests[j];
