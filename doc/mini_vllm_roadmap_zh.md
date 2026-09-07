@@ -202,7 +202,18 @@ Profile 中 Kernel Launch 从 17,576 降至 2,176。FP16 权重、激活和分�
 贯通，LayerNorm、QK/Softmax 和 Value 归约保留 FP32 累加，PagedAttention 和小算子增加
 `half2` 向量化。在 RTX 3090、Token Budget 64 上达到 2738.953 tok/s，相对同提交 FP32
 的 1866.201 tok/s 提升 46.8%；权重和 KV Cache 显存下降 50%。BF16 路径已实现，但当前
-GPT-2 测试出现 Argmax 分歧，仅作为实验模式。下一阶段做算子融合和 CUDA Graph。
+GPT-2 测试出现 Argmax 分歧，仅作为实验模式。
+
+Residual + LayerNorm 融合与 CUDA Graph 已完成。融合 Eager 单独运行是负优化，因此默认
+关闭；未融合 Graph 相对未融合 Eager 吞吐提升 15.9%，显式启用 Fusion + Graph 后达到
+3189.767 tok/s，相对提升 20.5%。Graph Cache 按 Packed Token 数分桶，动态调度元数据在
+Replay 前更新。
+
+完整 Block Prefix Cache 也已接入 Scheduler 和 CPU/CUDA Engine。Cache 使用完整历史前缀
+作为内容 Key，通过引用计数共享物理 KV Block，并在内存压力下 LRU 驱逐只有 Cache 引用
+的页。GPU 测试中第二个 18 Token 请求命中 16 Token 前缀，只执行剩余 2 Token，生成结果
+与 CPU 完整前缀一致。至此 GPT-2 教学型服务主链路已经闭环，后续优先考虑现代模型架构
+适配，而不是继续同时增加多个优化功能。
 
 ## 学习 nano-vLLM 的顺序
 

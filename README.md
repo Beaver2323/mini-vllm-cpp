@@ -25,7 +25,10 @@ Token、Position、Context Length、Slot Mapping 与 Block Table 会进入 GPU M
 | CUDA PagedAttention | 已完成并接入模型 | FP32/FP16/BF16，设备侧页表、Slot Mapping 与 KV Cache |
 | Multi-Token Prefill | 已完成第一版 | Packed Token Batch、因果分页 Attention、混合 Prefill/Decode |
 | 混合精度与 Tensor Core | 已完成第一版 | FP16 推荐路径、BF16 实验路径、FP32 归约、half2 向量化 |
-| Prefix Cache 与抢占 | 未开始 | Block 引用计数接口已经预留 |
+| Residual + LayerNorm 融合 | 已完成实验版 | 独立开关；Eager 负优化，配合 Graph 获得收益 |
+| CUDA Graph | 已完成第一版 | 按 Packed Token 数缓存，动态元数据在 Replay 前更新 |
+| Prefix Cache | 已完成第一版 | 完整 Block 复用、引用计数、连续命中和 LRU 驱逐 |
+| 抢占 | 未开始 | 后续按需要开发 |
 
 ## 架构
 
@@ -81,6 +84,7 @@ greedy sampling 和状态提交。
 | `mini_vllm/cuda/gpt2_cuda_engine.hpp` | CUDA schedule、run、sample、commit 执行闭环 |
 | `dev/cuda/test_paged_attention.cu` | CUDA Kernel 与独立 CPU 稠密参考对照 |
 | `dev/cuda/test_gpt2_cuda_model_runner.cu` | GPU ModelRunner 端到端正确性测试 |
+| `dev/cuda/test_gpt2_cuda_prefix_cache.cu` | 共享物理 KV Block 的 GPU 模型级测试 |
 | `benchmark/benchmark_cuda_paged_attention.cu` | CUDA Kernel 延迟与有效带宽测试 |
 | `benchmark/benchmark_gpt2_cuda_serving.cu` | GPU 服务 TTFT、TPOT 与吞吐测试 |
 | `doc/mini_vllm_roadmap_zh.md` | 开发路线、实验结果和学习顺序 |
@@ -124,10 +128,12 @@ CUDA PagedAttention 可独立构建和验证；GPU ModelRunner 测试需要 GPT-
 ```bash
 make GPU_COMPUTE_CAPABILITY=86 \
   test_cuda_paged_attention test_gpt2_cuda_model_runner \
-  benchmark_cuda_paged_attention benchmark_gpt2_cuda_serving
+  test_gpt2_cuda_prefix_cache benchmark_cuda_paged_attention \
+  benchmark_gpt2_cuda_serving
 CUDA_VISIBLE_DEVICES=0 ./test_cuda_paged_attention
 OMP_NUM_THREADS=16 CUDA_VISIBLE_DEVICES=0 \
   ./test_gpt2_cuda_model_runner --precision fp16
+CUDA_VISIBLE_DEVICES=0 ./test_gpt2_cuda_prefix_cache
 CUDA_VISIBLE_DEVICES=0 compute-sanitizer --tool memcheck \
   ./test_cuda_paged_attention
 CUDA_VISIBLE_DEVICES=0 compute-sanitizer --tool racecheck \
@@ -159,6 +165,8 @@ CUDA GPT2ModelRunner FP32 max_abs_logit_error=0.000267029
 CUDA GPT2ModelRunner FP16 max_abs_logit_error=0.122009
 CUDA GPT2ModelRunner FP16 CPU greedy agreement=passed
 CUDA GPT2ModelRunner FP16 memcheck=0 errors, racecheck=0 hazards
+CUDA Prefix Cache 18 Token Prompt scheduled_tokens=2
+CUDA Prefix Cache max_abs_logit_error=0.104279
 ```
 
 ## CPU Benchmark
@@ -219,6 +227,19 @@ Packed Prefill 相对逐 Token CUDA 基线吞吐提升 6.2 倍。16 个生成 To
 `s16816` FP16 Tensor Core Kernel。BF16 已贯通，但测试出现 Argmax 分歧，因此当前仅作
 实验模式，不作为默认性能路径。
 
+在 FP16 Budget 64 上进一步比较执行策略：
+
+| Fusion | CUDA Graph | 总时间 | 吞吐 |
+| --- | --- | ---: | ---: |
+| 关闭 | 关闭 | 6.044 ms | 2647.036 tok/s |
+| 开启 | 关闭 | 7.599 ms | 2105.604 tok/s |
+| 关闭 | 开启 | 5.215 ms | 3068.092 tok/s |
+| 开启 | 开启 | 5.016 ms | 3189.767 tok/s |
+
+CUDA Graph 相对未融合 Eager 提升 15.9%；Fusion 单独启用是负优化，但 Fusion + Graph
+为当前最优组合，相对基线提升 20.5%。Prefix Cache 的 GPU 测试让共享前缀为 16 Token
+的第二个 18 Token 请求只执行 2 Token，并保持生成结果一致。
+
 Nsight Systems 显示 GPU Kernel 时间主要由 cuBLAS GEMV/GEMM 类 Kernel 占用约 63%，
 PagedAttention 占 8.7%，LayerNorm 占 8.1%；两次被分析运行共启动 17,576 个 Kernel，
 Packed Prefill 将相同 Profile 的 Launch 数降至 2,176，减少 87.6%。
@@ -228,15 +249,17 @@ Packed Prefill 设计与 Token Budget 曲线见
 [开发任务 05：Multi-Token Prefill](doc/task_05_multi_token_prefill_zh.md)。
 混合精度边界、BF16 误差分析和 Tensor Core 证据见
 [开发任务 06：混合精度与 Tensor Core](doc/task_06_mixed_precision_zh.md)。
+融合的负优化分析与 Graph Cache 设计见
+[开发任务 07：融合与 CUDA Graph](doc/task_07_fusion_cuda_graph_zh.md)，Prefix Cache 的
+引用计数和 LRU 流程见 [开发任务 08：Prefix Cache](doc/task_08_prefix_cache_zh.md)。
 
 ## 下一步开发任务
 
-当前最高优先级任务是减少低精度路径中的小 Kernel 和 Launch 开销：
+当前核心服务链路已经闭环，后续按学习需要选择一个方向继续：
 
-1. 融合 Bias、Residual、LayerNorm 和 GELU 等小 Kernel。
-2. 为固定 Token Bucket 捕获 CUDA Graph，并与 Eager 路径对照。
-3. 裁剪非采样 Token 的词表投影，降低 FP32 logits 显存和计算。
-4. 在控制面实现 Prefix Cache、引用计数与抢占。
+1. 适配 RMSNorm、RoPE、SwiGLU 和 GQA，运行小型 Qwen/Llama。
+2. 裁剪非采样 Token 的词表投影，降低 FP32 logits 显存和计算。
+3. 在 Prefix Cache 基础上学习 Copy-on-Write 或抢占。
 
 ## 学习文档
 
@@ -248,6 +271,8 @@ Packed Prefill 设计与 Token Budget 曲线见
 - [开发任务 04：GPU ModelRunner](doc/task_04_gpu_model_runner_zh.md)
 - [开发任务 05：Multi-Token Prefill](doc/task_05_multi_token_prefill_zh.md)
 - [开发任务 06：混合精度与 Tensor Core](doc/task_06_mixed_precision_zh.md)
+- [开发任务 07：融合与 CUDA Graph](doc/task_07_fusion_cuda_graph_zh.md)
+- [开发任务 08：Prefix Cache](doc/task_08_prefix_cache_zh.md)
 - [简历项目表述](doc/resume_project.tex)
 
 ## 来源与许可证

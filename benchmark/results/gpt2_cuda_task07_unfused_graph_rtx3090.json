@@ -1,0 +1,40 @@
+{
+  "metadata": {
+    "git_commit": "0c17427",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "compute_capability": "8.6",
+    "compiled_gpu_arch": "sm_86",
+    "execution_mode": "packed_multi_token_prefill",
+    "precision": "fp16",
+    "residual_layernorm_fusion": false,
+    "cuda_graph": true,
+    "scheduler_token_budget": 64,
+    "driver_version": 12050,
+    "runtime_version": 12050,
+    "workload": "prompt lengths 8/16/24/32, four output tokens each, all arrivals at t=0",
+    "timing_scope": "schedule through synchronous GPU greedy token completion; engine initialization excluded",
+    "correctness": "all generated tokens equal independent CPU full-prefix greedy reference",
+    "warmup_runs": 1,
+    "repeats": 5
+  },
+  "summary": {
+    "total_time_median_ms": 5.214968,
+    "throughput_median_tokens_per_second": 3068.091693,
+    "ttft_p50_ms": 1.130372,
+    "ttft_p95_ms": 2.132777,
+    "tpot_p50_ms": 0.994878,
+    "tpot_p95_ms": 1.178255,
+    "request_latency_p50_ms": 4.296519,
+    "request_latency_p95_ms": 5.076999,
+    "weight_bytes": 248951808,
+    "kv_cache_bytes": 9437184,
+    "activation_bytes": 14352384
+  },
+  "runs": [
+    {"repeat": 1, "total_ms": 5.227185, "throughput_tokens_per_second": 3060.920935, "metadata_h2d_bytes": 2944, "ttft_p50_ms": 1.146203, "ttft_p95_ms": 2.147720, "tpot_p50_ms": 0.993662, "tpot_p95_ms": 1.178255, "request_latency_p50_ms": 4.307974, "request_latency_p95_ms": 5.089081, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 2, "total_ms": 5.211215, "throughput_tokens_per_second": 3070.301264, "metadata_h2d_bytes": 2944, "ttft_p50_ms": 1.130372, "ttft_p95_ms": 2.129961, "tpot_p50_ms": 0.994878, "tpot_p95_ms": 1.175987, "request_latency_p50_ms": 4.295653, "request_latency_p95_ms": 5.073722, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 3, "total_ms": 5.211943, "throughput_tokens_per_second": 3069.872407, "metadata_h2d_bytes": 2944, "ttft_p50_ms": 1.127726, "ttft_p95_ms": 2.128659, "tpot_p50_ms": 0.999742, "tpot_p95_ms": 1.177568, "request_latency_p50_ms": 4.294322, "request_latency_p95_ms": 5.074098, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 4, "total_ms": 5.236186, "throughput_tokens_per_second": 3055.659215, "metadata_h2d_bytes": 2944, "ttft_p50_ms": 1.132043, "ttft_p95_ms": 2.135167, "tpot_p50_ms": 1.010071, "tpot_p95_ms": 1.180146, "request_latency_p50_ms": 4.321884, "request_latency_p95_ms": 5.098788, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 5, "total_ms": 5.214968, "throughput_tokens_per_second": 3068.091693, "metadata_h2d_bytes": 2944, "ttft_p50_ms": 1.126541, "ttft_p95_ms": 2.132777, "tpot_p50_ms": 0.993813, "tpot_p95_ms": 1.183807, "request_latency_p50_ms": 4.296519, "request_latency_p95_ms": 5.076999, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]}
+  ]
+}

@@ -38,4 +38,11 @@
     \texttt{cublasGemmEx} 与 \texttt{half2} 向量化并验证 Ampere Tensor Core 路径；
     FP16 权重及 KV Cache 显存下降 50\%，吞吐达到 2738.953 tok/s，相对同版本 FP32
     提升 46.8\%，通过完整词表误差、Token 一致性及 Compute Sanitizer 验证。
+
+    \item \textbf{CUDA Graph 与 Prefix Cache：}
+    按 Packed Token Batch Shape 缓存 CUDA Graph，将动态调度元数据更新与静态设备执行图
+    解耦；实现 Residual + LayerNorm 融合及 Eager 回退，通过四组 A/B 实验识别单独融合
+    的性能回退，最终 Fusion + Graph 达到 3189.767 tok/s，相对未融合 Eager 提升
+    20.5\%；实现完整前缀 Block 的内容寻址、引用计数共享与 LRU 驱逐，使共享 16 Token
+    前缀的 18 Token 请求仅执行剩余 2 Token，并通过 GPU KV 复用正确性验证。
 \end{itemize}
