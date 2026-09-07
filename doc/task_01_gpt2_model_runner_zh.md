@@ -99,6 +99,6 @@ while (!scheduler.is_finished()) {
 ## 完成后再做什么
 
 1. 建立可重复 Benchmark，报告 TTFT、TPOT、总吞吐、P50/P95 和 KV Cache 使用量。
-2. CUDA Decode PagedAttention 与 GPU ModelRunner 已接通；下一步实现多 Token Prefill。
+2. CUDA Decode PagedAttention、GPU ModelRunner 和 Multi-Token Prefill 均已接通；下一步实现低精度。
 3. 实现 Prefix Cache、Block 引用计数和抢占。
 4. 在主链路稳定后再加入 Tensor Parallel 与 CUDA Graph。

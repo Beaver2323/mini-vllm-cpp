@@ -20,6 +20,7 @@
 | 可复现 Benchmark | 已完成 CPU/CUDA 基线 | TTFT/TPOT、吞吐、CSV/JSON 与 Nsight Systems 结果 |
 | 抢占与 Prefix Cache | 未完成 | Block 引用计数已预留 |
 | CUDA Paged Attention | 已完成并接入 GPT-2 | GPU KV Cache、Slot Mapping、模型级 reference 与 Sanitizer |
+| Multi-Token Prefill | 已完成第一版 | Packed Token GEMM、因果分页 Attention、Token Budget Sweep |
 
 模型级测试使用两个独立 GPT-2 实例：reference 对两个请求执行完整前缀前向，incremental
 逐 Token 写入分页 KV Cache。请求 0 执行长度 1--33；请求 1 在全局第 5 步加入，执行到
@@ -192,9 +193,11 @@ memcheck 为 0 errors，racecheck 为 0 hazards。在 RTX 3090 的 12 Heads、He
 GPU ModelRunner 已完成设备侧端到端 Decode。在与 CPU Benchmark 相同的 4 请求负载
 中，RTX 3090 FP32 输出吞吐中位数为 295.708 tok/s，CPU Continuous Batching 为
 7.714 tok/s；完整词表 logits 最大绝对误差为 2.5177e-04，所有生成 Token 一致。
-Nsight Systems 显示 cuBLAS GEMV/GEMM 类 Kernel 占 GPU Kernel 时间约 63%，
-PagedAttention 占 8.7%，LayerNorm 占 8.1%。下一阶段优先实现多 Token Prefill，
-然后再做低精度、融合和 CUDA Graph。
+Nsight Systems 显示逐 Token 基线中 cuBLAS GEMV/GEMM 类 Kernel 占 GPU Kernel 时间约
+63%，PagedAttention 占 8.7%，LayerNorm 占 8.1%。Packed Multi-Token Prefill 将
+Token Budget 64 的吞吐提升至 1838.148 tok/s，相对逐 Token GPU 基线提升 6.2 倍，
+Profile 中 Kernel Launch 从 17,576 降至 2,176。下一阶段做 FP16/BF16、融合和
+CUDA Graph。
 
 ## 学习 nano-vLLM 的顺序
 

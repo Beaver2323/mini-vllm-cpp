@@ -47,7 +47,7 @@ Continuous Batching 通过动态 Batch 提高了吞吐和尾部完成时间；�
 这些结果给出两个明确优化方向：
 
 1. 为 Prefill 增加多 Token 执行路径，避免逐 Token GEMV。
-2. CUDA PagedAttention 已接入 ModelRunner；下一步实现多 Token Prefill，并调节 Chunked Prefill 大小以平衡吞吐与 TPOT。
+2. CUDA PagedAttention 与 Multi-Token Prefill 已完成；Token Budget Sweep 已量化 TTFT、TPOT 和吞吐的关系，下一步实现 FP16/BF16。
 
 ## 复现
 

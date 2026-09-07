@@ -196,6 +196,8 @@ Profiler 会增加运行时间，因此不能把 Profile 中的吞吐当成正�
 减少 Prompt 阶段的 Kernel Launch。完成正确性和 Benchmark 后，再依次做低精度、融合、
 CUDA Graph、Prefix Cache 和抢占。
 
+该后续任务已经完成，结果见 `task_05_multi_token_prefill_zh.md`。
+
 面试时应能解释：为什么 Slot Mapping 和 Block Table 都需要；为什么权重上传不应计入
 每请求 Decode 时间；为什么只有 Token ID 可以回 CPU；以及 Nsight 数据为什么指向
 Multi-Token Prefill 和 Fusion，而不是继续只优化已经占 8.7% 的 PagedAttention。

@@ -30,6 +30,8 @@
     $4.47\times10^{-8}$，通过 Compute Sanitizer memcheck/racecheck；
     接入 12 层 GPT-2 GPU ModelRunner，以 cuBLAS 执行线性层并在设备侧完成 Argmax，
     权重、分页 KV Cache、中间激活与 logits 全程驻留 GPU；完整词表 logits 与 CPU
-    Reference 最大绝对误差为 $2.52\times10^{-4}$，生成 Token 完全一致；固定 4 请求
-    负载在 RTX 3090 上达到 295.708 tok/s，相对 CPU Continuous Batching 提升 38.3 倍。
+    Reference 最大绝对误差为 $2.67\times10^{-4}$，生成 Token 完全一致；实现 Packed
+    Multi-Token Prefill，将异长 Prompt 合并为 GEMM 并保持逐 Token 因果页表寻址，
+    固定 4 请求负载达到 1838.148 tok/s，相对逐 Token GPU 基线提升 6.2 倍；通过
+    Nsight Systems 定位并将 Kernel Launch 数量减少 87.6\%。
 \end{itemize}

@@ -1,0 +1,35 @@
+{
+  "metadata": {
+    "git_commit": "aa86317",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "compute_capability": "8.6",
+    "compiled_gpu_arch": "sm_86",
+    "execution_mode": "packed_multi_token_prefill",
+    "scheduler_token_budget": 1,
+    "driver_version": 12050,
+    "runtime_version": 12050,
+    "workload": "prompt lengths 8/16/24/32, four output tokens each, all arrivals at t=0",
+    "timing_scope": "schedule through synchronous GPU greedy token completion; engine initialization excluded",
+    "correctness": "all generated tokens equal independent CPU full-prefix greedy reference",
+    "warmup_runs": 1,
+    "repeats": 3
+  },
+  "summary": {
+    "total_time_median_ms": 110.936334,
+    "throughput_median_tokens_per_second": 144.226868,
+    "ttft_p50_ms": 50.048072,
+    "ttft_p95_ms": 101.192318,
+    "tpot_p50_ms": 1.214317,
+    "tpot_p95_ms": 1.253947,
+    "request_latency_p50_ms": 53.679244,
+    "request_latency_p95_ms": 104.782762,
+    "weight_bytes": 497903616,
+    "kv_cache_bytes": 18874368,
+    "activation_bytes": 247296
+  },
+  "runs": [
+    {"repeat": 1, "total_ms": 113.867162, "throughput_tokens_per_second": 140.514611, "metadata_h2d_bytes": 2944, "ttft_p50_ms": 50.525179, "ttft_p95_ms": 103.742350, "tpot_p50_ms": 1.245130, "tpot_p95_ms": 1.264544, "request_latency_p50_ms": 54.257743, "request_latency_p95_ms": 107.428695, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 2, "total_ms": 110.936334, "throughput_tokens_per_second": 144.226868, "metadata_h2d_bytes": 2944, "ttft_p50_ms": 50.048072, "ttft_p95_ms": 101.192318, "tpot_p50_ms": 1.214317, "tpot_p95_ms": 1.253947, "request_latency_p50_ms": 53.679244, "request_latency_p95_ms": 104.782762, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 3, "total_ms": 107.157500, "throughput_tokens_per_second": 149.312927, "metadata_h2d_bytes": 2944, "ttft_p50_ms": 46.861078, "ttft_p95_ms": 97.399686, "tpot_p50_ms": 1.181998, "tpot_p95_ms": 1.204383, "request_latency_p50_ms": 50.404250, "request_latency_p95_ms": 101.002524, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]}
+  ]
+}

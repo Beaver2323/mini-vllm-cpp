@@ -7,7 +7,8 @@ LLM 推理引擎。项目使用 C++ 实现推理执行路径，并参考 vLLM �
 当前版本同时包含 CPU 正确性基线和端到端 FP32 CUDA Decode 路径。Scheduler 产生的
 Token、Position、Context Length、Slot Mapping 与 Block Table 会进入 GPU ModelRunner；
 模型权重、分页 KV Cache、中间激活和 logits 在设备侧持久保存，只把最终 Greedy Token
-传回 CPU。
+传回 CPU。GPU Prefill 会把同一调度轮的 Token 压紧为 `total_tokens` Batch，使用 GEMM
+完成各层投影。
 
 ## 当前能力
 
@@ -22,6 +23,7 @@ Token、Position、Context Length、Slot Mapping 与 Block Table 会进入 GPU M
 | Scheduler/ModelRunner 闭环 | 已完成 CPU/CUDA 基线 | 支持混合 Decode、Chunked Prefill、动态请求和页复用 |
 | 可复现 Benchmark | 已完成 CPU/CUDA 基线 | warmup、重复测试、TTFT/TPOT、吞吐和原始结果 |
 | CUDA PagedAttention | 已完成并接入模型 | FP32 Decode，设备侧页表、Slot Mapping 与 KV Cache |
+| Multi-Token Prefill | 已完成第一版 | Packed Token Batch、因果分页 Attention、混合 Prefill/Decode |
 | Prefix Cache 与抢占 | 未开始 | Block 引用计数接口已经预留 |
 
 ## 架构
@@ -201,25 +203,28 @@ FP32、4 个请求同时到达，每个请求输出 4 Token；预热一次后正
 | 路径 | 中位总时间 | 输出吞吐 | TTFT P50/P95 | TPOT P50/P95 |
 | --- | ---: | ---: | ---: | ---: |
 | CPU Continuous Batching | 2074.0 ms | 7.714 tok/s | 1200.8 / 1812.5 ms | 276.3 / 276.3 ms |
-| CUDA Continuous Batching | 54.107 ms | 295.708 tok/s | 30.912 / 47.232 ms | 1.397 / 19.200 ms |
+| CUDA 逐 Token Prefill | 54.107 ms | 295.708 tok/s | 30.912 / 47.232 ms | 1.397 / 19.200 ms |
+| CUDA Packed Prefill | 8.704 ms | 1838.148 tok/s | 2.511 / 4.042 ms | 1.541 / 1.789 ms |
 
-固定负载下 CUDA 吞吐约为 CPU Continuous Batching 的 38.3 倍。16 个生成 Token 与独立
-CPU 完整前缀 Greedy Reference 全部一致。该数字用于本项目版本间回归，不代表 vLLM、
+Packed Prefill 相对逐 Token CUDA 基线吞吐提升 6.2 倍。16 个生成 Token 与独立 CPU
+完整前缀 Greedy Reference 全部一致。该数字用于本项目版本间回归，不代表 vLLM、
 其他模型、精度或工作负载的通用加速比。
 
 Nsight Systems 显示 GPU Kernel 时间主要由 cuBLAS GEMV/GEMM 类 Kernel 占用约 63%，
 PagedAttention 占 8.7%，LayerNorm 占 8.1%；两次被分析运行共启动 17,576 个 Kernel，
-说明下一阶段最有价值的是多 Token Prefill、Kernel Fusion 和 CUDA Graph。
+Packed Prefill 将相同 Profile 的 Launch 数降至 2,176，减少 87.6%。
 
 完整说明见 [开发任务 04：GPU ModelRunner](doc/task_04_gpu_model_runner_zh.md)。
+Packed Prefill 设计与 Token Budget 曲线见
+[开发任务 05：Multi-Token Prefill](doc/task_05_multi_token_prefill_zh.md)。
 
 ## 下一步开发任务
 
-当前最高优先级任务是优化已经接通的 GPU 执行路径：
+当前最高优先级任务是增加低精度执行：
 
-1. 为 Prefill 增加多 Token GEMM 路径，避免把 Prompt 拆成大量 T=1 微步。
-2. 增加 FP16/BF16 权重和 KV Cache，使用 Tensor Core。
-3. 融合 Bias、Residual、LayerNorm 等小 Kernel，减少 Launch 次数。
+1. 增加 FP16/BF16 权重和 KV Cache，使用 Tensor Core。
+2. 分别校验 logits、生成 Token、显存占用和吞吐变化。
+3. 融合 Bias、Residual、LayerNorm 等小 Kernel。
 4. 为固定 Batch Bucket 捕获 CUDA Graph，并与 Eager 路径对照。
 5. 在控制面实现 Prefix Cache、引用计数与抢占。
 
@@ -231,6 +236,7 @@ PagedAttention 占 8.7%，LayerNorm 占 8.1%；两次被分析运行共启动 17
 - [开发任务 02：可复现推理 Benchmark](doc/task_02_benchmark_zh.md)
 - [开发任务 03：CUDA PagedAttention](doc/task_03_cuda_paged_attention_zh.md)
 - [开发任务 04：GPU ModelRunner](doc/task_04_gpu_model_runner_zh.md)
+- [开发任务 05：Multi-Token Prefill](doc/task_05_multi_token_prefill_zh.md)
 - [简历项目表述](doc/resume_project.tex)
 
 ## 来源与许可证

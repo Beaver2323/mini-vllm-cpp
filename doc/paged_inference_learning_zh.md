@@ -146,14 +146,14 @@ OMP_NUM_THREADS=2 conda run -p /home/miniconda3/envs/zyf1 /tmp/zyf_paged_attenti
 2. **控制面接入模型（已完成）**：ModelRunner 已整理 token、position、context length、slot mapping 与 block table。
 3. **调度与执行闭环（已完成）**：Engine 已连接 schedule、run、greedy sample、commit 和页回收。
 4. **可信 Benchmark（已完成 CPU 基线）**：比较完整前缀重算、分页增量和连续批处理；固定权重、Token、线程数、编译选项及长度，记录预热后多次延迟、吞吐和内存口径。
-5. **设备算子扩展（已完成模型接入）**：FP32 CUDA PagedAttention 已接入 12 层 GPT-2 GPU ModelRunner，通过完整词表 reference、memcheck、racecheck 与 RTX 3090 端到端 Benchmark；下一步实现多 Token Prefill。
+5. **设备算子扩展（已完成 Multi-Token Prefill）**：FP32 CUDA PagedAttention 已接入 12 层 GPT-2 GPU ModelRunner；Packed Prefill 将同轮异长 Token 合并为 GEMM，通过完整词表 reference、memcheck、racecheck 与 RTX 3090 Benchmark。下一步实现低精度。
 
 现有细节也值得修复：页表初始化为 0 会把未分配项伪装成合法页；softmax 最大值初值应使用负无穷而不是 -10000；裸指针所有权需要禁用拷贝或使用 RAII；推理入口缺少 Token 和上下文长度等输入校验。
 `acts.preatt` 被用作 `[B, NH, max_seq_len]` scratch，但实际空间按训练 T 分配，需显式验证容量，不能依赖默认配置碰巧够大。
 
 ## 9. 一分钟项目讲述
 
-“我基于 llm.c 的 GPT-2 实现了 CPU/CUDA 双路径增量推理和连续批处理。控制面包含 Sequence、BlockManager、Token Budget Scheduler 和 Chunked Prefill；ModelRunner 将调度结果转换为异长微批次及 Block Table、Slot Mapping 等设备元数据。我实现 FP32 CUDA PagedAttention，并接入完整 12 层 GPT-2，权重、KV Cache、中间激活和 logits 驻留 GPU，设备侧完成 Argmax。测试覆盖动态请求、跨页和 Block 复用，完整词表 logits 与 CPU Reference 最大绝对误差为 $2.52\times10^{-4}$，生成 Token 完全一致。固定 4 请求负载在 RTX 3090 上达到 295.708 tok/s，Nsight 显示下一步应优先优化单 Token Prefill 和 Kernel Launch。”
+“我基于 llm.c 的 GPT-2 实现了 CPU/CUDA 双路径增量推理和连续批处理。控制面包含 Sequence、BlockManager、Token Budget Scheduler 和 Chunked Prefill；ModelRunner 将调度结果转换为 Block Table、Slot Mapping 等设备元数据。我实现 FP32 CUDA PagedAttention，并接入完整 12 层 GPT-2，权重、KV Cache、中间激活和 logits 驻留 GPU，设备侧完成 Argmax。进一步将同轮异长 Prompt 压成 Packed Token Batch，使线性层由重复 GEMV 转为 GEMM，同时通过逐 Token Context Length 保证因果性。完整词表 logits 与 CPU Reference 最大绝对误差为 $2.67\times10^{-4}$，生成 Token 完全一致；固定负载达到 1838.148 tok/s，相对逐 Token GPU 基线提升 6.2 倍，Nsight 中 Kernel Launch 减少 87.6\%。”
 
 理解每句话再用于面试。新增测试是在本次协作中补充的，应先读懂参考实现与测试覆盖范围。
 

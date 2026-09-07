@@ -1,0 +1,19 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+19.5,3018108,192,15719.3,18928.0,8576,22049,5188.5,ampere_sgemm_32x32_sliced1x4_tn
+13.5,2091552,74,28264.2,23424.0,12160,198912,30050.5,ampere_sgemm_64x32_sliced1x4_tn
+12.7,1964483,100,19644.8,14304.0,11488,176608,32171.2,"void gemmSN_TN_kernel<float, (int)128, (int)16, (int)2, (int)4, (int)4, (int)4, (bool)1, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>>(cublasGemmSmallNParams<T9, T10, T11, T1>)"
+8.8,1365121,120,11376.0,11392.0,10560,12096,466.0,"mini_vllm::cuda::<unnamed>::paged_attention_kernel(const float *, const float *, const float *, const int *, const int *, float *, int, int, int, int, int, int, int)"
+6.8,1053866,250,4215.5,4095.0,3936,5503,321.2,"mini_vllm::cuda::<unnamed>::layernorm_kernel(float *, const float *, const float *, const float *, int, int)"
+5.8,902200,480,1879.6,1759.5,1440,3551,478.0,"mini_vllm::cuda::<unnamed>::add_bias_kernel(float *, const float *, int, int)"
+4.7,735775,2,367887.5,367887.5,360864,374911,9932.7,ampere_sgemm_128x64_tn
+4.6,710625,24,29609.4,29568.0,29376,29888,167.5,ampere_sgemm_128x32_tn
+4.4,678400,10,67840.0,66480.0,66112,73824,3009.6,"mini_vllm::cuda::<unnamed>::argmax_kernel(const float *, int *, int, int, int)"
+4.3,665503,26,25596.3,13344.0,13120,173056,43392.3,"void gemv2T_kernel_val<int, int, float, float, float, float, (int)128, (int)16, (int)4, (int)4, (bool)0, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>, float>>(T13, T6, T6)"
+3.3,506333,216,2344.1,2016.0,1632,4672,831.1,"void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, float, float, float, float, (bool)1, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T5 *, T5 *, const T6 *, const T6 *, const T7 *, const T4 *, T7 *, void *, long, T6 *, int *)"
+2.4,374430,48,7800.6,7824.0,5184,10528,2528.1,"std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, float, float, float, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)9, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>, float>>(T13)"
+2.3,362696,240,1511.2,1473.0,1248,1856,120.7,"mini_vllm::cuda::<unnamed>::residual_kernel(float *, const float *, const float *, int)"
+2.0,307197,24,12799.9,12768.0,12672,13152,123.1,"std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, float, float, float, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>, float>>(T13)"
+1.7,267907,120,2232.6,2080.5,2016,2752,243.2,"mini_vllm::cuda::<unnamed>::write_kv_cache_kernel(const float *, const float *, float *, float *, const int *, const int *, int, int, int, int, int)"
+1.5,237858,120,1982.2,1920.0,1728,2336,197.9,"mini_vllm::cuda::<unnamed>::split_qkv_kernel(const float *, float *, float *, float *, int, int)"
+1.4,223618,120,1863.5,1696.0,1536,2496,282.3,"mini_vllm::cuda::<unnamed>::gelu_kernel(float *, int)"
+0.2,24672,10,2467.2,2288.0,2176,3328,417.1,"mini_vllm::cuda::<unnamed>::embedding_kernel(float *, const int *, const int *, const float *, const float *, int, int)"
