@@ -246,17 +246,21 @@ void write_json(
     const std::vector<RunResult>& runs) {
     std::vector<double> total_ms;
     std::vector<double> throughput;
-    std::vector<double> ttft;
-    std::vector<double> tpot;
-    std::vector<double> latency;
+    std::vector<double> ttft_p50;
+    std::vector<double> ttft_p95;
+    std::vector<double> tpot_p50;
+    std::vector<double> tpot_p95;
+    std::vector<double> latency_p50;
+    std::vector<double> latency_p95;
     for (const RunResult& run : runs) {
         total_ms.push_back(run.total_ms);
         throughput.push_back(run.throughput_tokens_per_second);
-        ttft.insert(ttft.end(), run.ttft_ms.begin(), run.ttft_ms.end());
-        tpot.insert(tpot.end(), run.tpot_ms.begin(), run.tpot_ms.end());
-        latency.insert(
-            latency.end(), run.request_latency_ms.begin(),
-            run.request_latency_ms.end());
+        ttft_p50.push_back(percentile(run.ttft_ms, 0.5));
+        ttft_p95.push_back(percentile(run.ttft_ms, 0.95));
+        tpot_p50.push_back(percentile(run.tpot_ms, 0.5));
+        tpot_p95.push_back(percentile(run.tpot_ms, 0.95));
+        latency_p50.push_back(percentile(run.request_latency_ms, 0.5));
+        latency_p95.push_back(percentile(run.request_latency_ms, 0.95));
     }
 
     std::ofstream file(path);
@@ -281,14 +285,14 @@ void write_json(
          << percentile(total_ms, 0.5) << ",\n"
          << "    \"throughput_median_tokens_per_second\": "
          << percentile(throughput, 0.5) << ",\n"
-         << "    \"ttft_p50_ms\": " << percentile(ttft, 0.5) << ",\n"
-         << "    \"ttft_p95_ms\": " << percentile(ttft, 0.95) << ",\n"
-         << "    \"tpot_p50_ms\": " << percentile(tpot, 0.5) << ",\n"
-         << "    \"tpot_p95_ms\": " << percentile(tpot, 0.95) << ",\n"
+         << "    \"ttft_p50_ms\": " << percentile(ttft_p50, 0.5) << ",\n"
+         << "    \"ttft_p95_ms\": " << percentile(ttft_p95, 0.5) << ",\n"
+         << "    \"tpot_p50_ms\": " << percentile(tpot_p50, 0.5) << ",\n"
+         << "    \"tpot_p95_ms\": " << percentile(tpot_p95, 0.5) << ",\n"
          << "    \"request_latency_p50_ms\": "
-         << percentile(latency, 0.5) << ",\n"
+         << percentile(latency_p50, 0.5) << ",\n"
          << "    \"request_latency_p95_ms\": "
-         << percentile(latency, 0.95) << ",\n"
+         << percentile(latency_p95, 0.5) << ",\n"
          << "    \"weight_bytes\": " << runs.front().weight_bytes << ",\n"
          << "    \"kv_cache_bytes\": " << runs.front().kv_cache_bytes
          << ",\n"
@@ -302,7 +306,20 @@ void write_json(
              << ", \"throughput_tokens_per_second\": "
              << run.throughput_tokens_per_second
              << ", \"metadata_h2d_bytes\": "
-             << run.metadata_h2d_bytes << ", \"generated_tokens\": ";
+             << run.metadata_h2d_bytes
+             << ", \"ttft_p50_ms\": "
+             << percentile(run.ttft_ms, 0.5)
+             << ", \"ttft_p95_ms\": "
+             << percentile(run.ttft_ms, 0.95)
+             << ", \"tpot_p50_ms\": "
+             << percentile(run.tpot_ms, 0.5)
+             << ", \"tpot_p95_ms\": "
+             << percentile(run.tpot_ms, 0.95)
+             << ", \"request_latency_p50_ms\": "
+             << percentile(run.request_latency_ms, 0.5)
+             << ", \"request_latency_p95_ms\": "
+             << percentile(run.request_latency_ms, 0.95)
+             << ", \"generated_tokens\": ";
         write_tokens(file, run.generated_tokens);
         file << '}' << (index + 1 == runs.size() ? "\n" : ",\n");
     }
