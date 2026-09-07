@@ -176,6 +176,7 @@ int main() {
         DeviceBuffer<float> device_output(qkv_elements);
         DeviceBuffer<int> device_block_tables(block_tables.size());
         DeviceBuffer<int> device_context_lengths(batch_size);
+        DeviceBuffer<int> device_slot_mapping(batch_size);
         copy_to_device(device_query, query);
         copy_to_device(device_block_tables, block_tables);
 
@@ -186,12 +187,20 @@ int main() {
         for (const auto& lengths : cases) {
             const std::vector<int> context_lengths(
                 lengths.begin(), lengths.end());
+            std::vector<int> slot_mapping(batch_size);
             std::vector<float> key_cache(cache_elements, 0.0f);
             std::vector<float> value_cache(cache_elements, 0.0f);
             std::vector<float> new_key(qkv_elements);
             std::vector<float> new_value(qkv_elements);
 
             for (int request = 0; request < batch_size; ++request) {
+                const int current_position = context_lengths[request] - 1;
+                slot_mapping[request] =
+                    block_tables[
+                        request * max_blocks +
+                        current_position / kPagedAttentionPageSize] *
+                        kPagedAttentionPageSize +
+                    current_position % kPagedAttentionPageSize;
                 for (int token = 0; token < context_lengths[request];
                      ++token) {
                     const int physical_page =
@@ -237,12 +246,14 @@ int main() {
             copy_to_device(device_key_cache, key_cache);
             copy_to_device(device_value_cache, value_cache);
             copy_to_device(device_context_lengths, context_lengths);
+            copy_to_device(device_slot_mapping, slot_mapping);
 
             CUDA_CHECK(paged_attention_decode(
                 device_query.get(), device_new_key.get(),
                 device_new_value.get(), device_key_cache.get(),
                 device_value_cache.get(), device_block_tables.get(),
-                device_context_lengths.get(), device_output.get(),
+                device_context_lengths.get(), device_slot_mapping.get(),
+                device_output.get(),
                 batch_size, num_pages, num_layers, layer_index,
                 num_heads, head_size, max_blocks, max_context));
             CUDA_CHECK(cudaDeviceSynchronize());

@@ -13,10 +13,12 @@ constexpr int kPagedAttentionPageSize = 16;
 // k_cache/v_cache:   [num_pages, num_layers, num_heads, page_size, head_size]
 // block_tables:      [batch, max_blocks_per_sequence]
 // context_lengths:   [batch]
+// slot_mapping:      [batch]，值为 physical_page * page_size + offset
 cudaError_t paged_attention_decode(
     const float* q, const float* new_k, const float* new_v,
     float* k_cache, float* v_cache,
     const int* block_tables, const int* context_lengths,
+    const int* slot_mapping,
     float* out, int batch_size, int num_pages, int num_layers,
     int layer_index, int num_heads, int head_size,
     int max_blocks_per_sequence, int max_context_length,

@@ -118,6 +118,7 @@ static Result benchmark_case(
     DeviceBuffer<int> block_tables(
         static_cast<std::size_t>(batch_size) * max_blocks);
     DeviceBuffer<int> context_lengths(batch_size);
+    DeviceBuffer<int> slot_mapping(batch_size);
 
     CUDA_CHECK(cudaMemset(query.get(), 0x3f, query.bytes()));
     CUDA_CHECK(cudaMemset(new_key.get(), 0x3e, new_key.bytes()));
@@ -136,18 +137,29 @@ static Result benchmark_case(
     }
     std::vector<int> host_context_lengths(
         batch_size, context_length);
+    std::vector<int> host_slot_mapping(batch_size);
+    for (int request = 0; request < batch_size; ++request) {
+        host_slot_mapping[request] =
+            (request * max_blocks + max_blocks - 1) *
+                kPagedAttentionPageSize +
+            (context_length - 1) % kPagedAttentionPageSize;
+    }
     CUDA_CHECK(cudaMemcpy(
         block_tables.get(), host_block_tables.data(),
         block_tables.bytes(), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(
         context_lengths.get(), host_context_lengths.data(),
         context_lengths.bytes(), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(
+        slot_mapping.get(), host_slot_mapping.data(),
+        slot_mapping.bytes(), cudaMemcpyHostToDevice));
 
     for (int i = 0; i < options.warmup_iterations; ++i) {
         CUDA_CHECK(paged_attention_decode(
             query.get(), new_key.get(), new_value.get(),
             key_cache.get(), value_cache.get(), block_tables.get(),
-            context_lengths.get(), output.get(), batch_size, num_pages,
+            context_lengths.get(), slot_mapping.get(), output.get(),
+            batch_size, num_pages,
             num_layers, layer_index, num_heads, head_size, max_blocks,
             context_length));
     }
@@ -163,7 +175,8 @@ static Result benchmark_case(
             CUDA_CHECK(paged_attention_decode(
                 query.get(), new_key.get(), new_value.get(),
                 key_cache.get(), value_cache.get(), block_tables.get(),
-                context_lengths.get(), output.get(), batch_size, num_pages,
+                context_lengths.get(), slot_mapping.get(), output.get(),
+                batch_size, num_pages,
                 num_layers, layer_index, num_heads, head_size, max_blocks,
                 context_length));
         }

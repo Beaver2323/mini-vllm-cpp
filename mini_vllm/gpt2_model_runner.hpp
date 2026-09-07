@@ -5,7 +5,7 @@
 #define GPT2_PAGED_INFERENCE_NO_MAIN
 #endif
 #include "../train_gpt2.cpp"
-#include "scheduler.hpp"
+#include "model_input.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -15,21 +15,6 @@
 #include <vector>
 
 namespace mini_vllm {
-
-// 一个 ModelInput 表示 ModelRunner 内部的一个单 Token 微批次。
-// Chunked Prefill 会被拆成多个微批次；每个微批次仍可同时包含多个请求。
-struct ModelInput {
-    std::vector<int> token_ids;
-    std::vector<int> positions;
-    std::vector<int> context_lengths;
-    std::vector<int> slot_mapping;
-    std::vector<int> block_tables;
-    std::vector<std::uint64_t> request_ids;
-    std::vector<std::size_t> scheduled_item_indices;
-    std::size_t max_blocks_per_sequence = 0;
-
-    std::size_t batch_size() const { return token_ids.size(); }
-};
 
 class GPT2ModelRunner {
 public:
@@ -91,7 +76,10 @@ public:
 
         for (std::size_t micro_step = 0; micro_step < max_micro_steps;
              ++micro_step) {
-            ModelInput input = prepare_model_input(output, micro_step);
+            ModelInput input = mini_vllm::prepare_model_input(
+                output, micro_step, block_manager_, max_context_length_,
+                max_blocks_per_sequence_,
+                static_cast<std::size_t>(kv_cache_pool_.num_pages));
             PageTable page_table(
                 checked_int(input.batch_size(), "micro batch is too large"),
                 checked_int(max_blocks_per_sequence_,
@@ -149,68 +137,6 @@ private:
             std::max_element(
                 logits, logits + model_.config.vocab_size) -
             logits);
-    }
-
-    ModelInput prepare_model_input(
-        const SchedulerOutput& output, std::size_t micro_step) const {
-        ModelInput input;
-        input.max_blocks_per_sequence = max_blocks_per_sequence_;
-
-        for (std::size_t item_index = 0;
-             item_index < output.items.size(); ++item_index) {
-            const ScheduledItem& item = output.items[item_index];
-            if (micro_step >= item.num_scheduled_tokens) {
-                continue;
-            }
-            const Sequence& sequence = *item.sequence;
-            const std::size_t position =
-                sequence.num_computed_tokens() + micro_step;
-            if (position >= sequence.num_tokens() ||
-                position >= max_context_length_) {
-                throw std::out_of_range(
-                    "scheduled token exceeds sequence or context capacity");
-            }
-
-            const int physical_block =
-                block_manager_.block_id_for_token(sequence, position);
-            if (physical_block < 0 ||
-                physical_block >= kv_cache_pool_.num_pages) {
-                throw std::out_of_range(
-                    "sequence references an invalid physical KV block");
-            }
-            if (sequence.block_table().size() >
-                max_blocks_per_sequence_) {
-                throw std::out_of_range(
-                    "sequence block table exceeds ModelRunner capacity");
-            }
-
-            input.token_ids.push_back(sequence.token_ids()[position]);
-            input.positions.push_back(checked_int(
-                position, "token position is too large"));
-            input.context_lengths.push_back(checked_int(
-                position + 1, "context length is too large"));
-            const std::size_t physical_slot =
-                static_cast<std::size_t>(physical_block) * PAGE_SIZE +
-                block_manager_.slot_for_token(position);
-            input.slot_mapping.push_back(checked_int(
-                physical_slot, "physical KV slot is too large"));
-            input.request_ids.push_back(sequence.request_id());
-            input.scheduled_item_indices.push_back(item_index);
-
-            const std::size_t row_start = input.block_tables.size();
-            input.block_tables.resize(
-                row_start + max_blocks_per_sequence_, -1);
-            std::copy(
-                sequence.block_table().begin(),
-                sequence.block_table().end(),
-                input.block_tables.begin() +
-                    static_cast<std::ptrdiff_t>(row_start));
-        }
-
-        if (input.batch_size() == 0) {
-            throw std::logic_error("ModelRunner produced an empty micro batch");
-        }
-        return input;
     }
 
     GPT2& model_;

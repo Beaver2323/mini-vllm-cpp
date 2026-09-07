@@ -24,20 +24,17 @@ __device__ __forceinline__ std::size_t cache_offset(
 __global__ void write_kv_cache_kernel(
     const float* new_k, const float* new_v,
     float* k_cache, float* v_cache,
-    const int* block_tables, const int* context_lengths,
+    const int* context_lengths, const int* slot_mapping,
     int batch_size, int num_layers, int layer_index,
-    int num_heads, int head_size, int max_blocks_per_sequence) {
+    int num_heads, int head_size) {
     const int request = blockIdx.x;
     const int head = blockIdx.y;
     if (request >= batch_size || head >= num_heads) return;
 
-    const int position = context_lengths[request] - 1;
-    if (position < 0) return;
-    const int logical_block = position / kPagedAttentionPageSize;
-    const int page_offset = position % kPagedAttentionPageSize;
-    const int physical_block =
-        block_tables[
-            request * max_blocks_per_sequence + logical_block];
+    if (context_lengths[request] <= 0) return;
+    const int physical_slot = slot_mapping[request];
+    const int physical_block = physical_slot / kPagedAttentionPageSize;
+    const int page_offset = physical_slot % kPagedAttentionPageSize;
     const std::size_t source_base =
         (static_cast<std::size_t>(request) * num_heads + head) *
         head_size;
@@ -152,6 +149,7 @@ cudaError_t paged_attention_decode(
     const float* q, const float* new_k, const float* new_v,
     float* k_cache, float* v_cache,
     const int* block_tables, const int* context_lengths,
+    const int* slot_mapping,
     float* out, int batch_size, int num_pages, int num_layers,
     int layer_index, int num_heads, int head_size,
     int max_blocks_per_sequence, int max_context_length,
@@ -159,6 +157,7 @@ cudaError_t paged_attention_decode(
     if (q == nullptr || new_k == nullptr || new_v == nullptr ||
         k_cache == nullptr || v_cache == nullptr ||
         block_tables == nullptr || context_lengths == nullptr ||
+        slot_mapping == nullptr ||
         out == nullptr || batch_size <= 0 || num_pages <= 0 ||
         num_layers <= 0 || layer_index < 0 ||
         layer_index >= num_layers || num_heads <= 0 ||
@@ -171,9 +170,8 @@ cudaError_t paged_attention_decode(
 
     const dim3 grid(batch_size, num_heads);
     write_kv_cache_kernel<<<grid, kThreads, 0, stream>>>(
-        new_k, new_v, k_cache, v_cache, block_tables,
-        context_lengths, batch_size, num_layers, layer_index,
-        num_heads, head_size, max_blocks_per_sequence);
+        new_k, new_v, k_cache, v_cache, context_lengths, slot_mapping,
+        batch_size, num_layers, layer_index, num_heads, head_size);
     cudaError_t error = cudaGetLastError();
     if (error != cudaSuccess) return error;
 
