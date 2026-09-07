@@ -370,6 +370,65 @@ __global__ void layernorm_kernel(
     }
 }
 
+// 将 Residual Add 与紧随其后的 LayerNorm 合并为一次 Launch。Residual 先按
+// 目标存储类型舍入，再转回 FP32 参与归约，从而与未融合路径保持相同数值边界。
+template <typename T>
+__global__ void residual_layernorm_kernel(
+    T* residual_output, T* normalized_output,
+    const T* left, const T* right, const T* weight, const T* bias,
+    int batch_size, int channels) {
+    const int row = blockIdx.x;
+    const int thread = threadIdx.x;
+    if (row >= batch_size) return;
+    __shared__ float reduction[kThreads];
+
+    const std::size_t row_base =
+        static_cast<std::size_t>(row) * channels;
+    float local_sum = 0.0f;
+    for (int channel = thread; channel < channels;
+         channel += blockDim.x) {
+        const std::size_t index = row_base + channel;
+        const T residual = from_float<T>(
+            to_float(left[index]) + to_float(right[index]));
+        residual_output[index] = residual;
+        local_sum += to_float(residual);
+    }
+    reduction[thread] = local_sum;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
+        if (thread < stride) reduction[thread] += reduction[thread + stride];
+        __syncthreads();
+    }
+    const float mean = reduction[0] / channels;
+    __syncthreads();
+
+    float local_variance = 0.0f;
+    for (int channel = thread; channel < channels;
+         channel += blockDim.x) {
+        const float shifted =
+            to_float(residual_output[row_base + channel]) - mean;
+        local_variance += shifted * shifted;
+    }
+    reduction[thread] = local_variance;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
+        if (thread < stride) reduction[thread] += reduction[thread + stride];
+        __syncthreads();
+    }
+    const float inverse_stddev =
+        rsqrtf(reduction[0] / channels + 1e-5f);
+    __syncthreads();
+
+    for (int channel = thread; channel < channels;
+         channel += blockDim.x) {
+        const std::size_t index = row_base + channel;
+        normalized_output[index] = from_float<T>(
+            (to_float(residual_output[index]) - mean) * inverse_stddev *
+                to_float(weight[channel]) +
+            to_float(bias[channel]));
+    }
+}
+
 template <typename T>
 __global__ void add_bias_kernel(
     T* output, const T* bias, int batch_size, int width) {
@@ -646,6 +705,7 @@ public:
             projected_.bytes() + hidden_.bytes() + logits_.bytes();
     }
     CudaDataType data_type() const { return config_.data_type; }
+    std::size_t num_cuda_graphs() const { return 0; }
 
 private:
     static std::size_t sum(const std::vector<std::size_t>& values) {
@@ -808,15 +868,26 @@ private:
             batch_size, channels);
         check_last_kernel("embedding_kernel");
 
-        for (int layer = 0; layer < config_.num_layers; ++layer) {
+        if (config_.enable_fused_residual_layernorm) {
             layernorm_kernel<T><<<batch_size, kThreads, 0, stream_.get()>>>(
                 normalized_.get<T>(), residual_a_.get<T>(),
-                parameters_view.ln1w +
-                    static_cast<std::size_t>(layer) * channels,
-                parameters_view.ln1b +
-                    static_cast<std::size_t>(layer) * channels,
+                parameters_view.ln1w, parameters_view.ln1b,
                 batch_size, channels);
-            check_last_kernel("layernorm ln1");
+            check_last_kernel("initial layernorm ln1");
+        }
+
+        for (int layer = 0; layer < config_.num_layers; ++layer) {
+            if (!config_.enable_fused_residual_layernorm) {
+                layernorm_kernel<T><<<
+                    batch_size, kThreads, 0, stream_.get()>>>(
+                    normalized_.get<T>(), residual_a_.get<T>(),
+                    parameters_view.ln1w +
+                        static_cast<std::size_t>(layer) * channels,
+                    parameters_view.ln1b +
+                        static_cast<std::size_t>(layer) * channels,
+                    batch_size, channels);
+                check_last_kernel("layernorm ln1");
+            }
 
             matmul(
                 qkv_.get<T>(), normalized_.get<T>(),
@@ -850,29 +921,44 @@ private:
                 parameters_view.attprojb +
                     static_cast<std::size_t>(layer) * channels,
                 batch_size, channels, channels);
-            if constexpr (std::is_same<T, __half>::value) {
-                residual_half2_kernel<<<
-                    blocks_for(channel_elements / 2), kThreads, 0,
-                    stream_.get()>>>(
-                    residual_b_.get<T>(), residual_a_.get<T>(),
-                    projected_.get<T>(), channel_elements);
+            if (config_.enable_fused_residual_layernorm) {
+                residual_layernorm_kernel<T><<<
+                    batch_size, kThreads, 0, stream_.get()>>>(
+                    residual_b_.get<T>(), normalized_.get<T>(),
+                    residual_a_.get<T>(), projected_.get<T>(),
+                    parameters_view.ln2w +
+                        static_cast<std::size_t>(layer) * channels,
+                    parameters_view.ln2b +
+                        static_cast<std::size_t>(layer) * channels,
+                    batch_size, channels);
             } else {
-                residual_kernel<T><<<
-                    blocks_for(channel_elements), kThreads, 0,
-                    stream_.get()>>>(
-                    residual_b_.get<T>(), residual_a_.get<T>(),
-                    projected_.get<T>(), channel_elements);
+                if constexpr (std::is_same<T, __half>::value) {
+                    residual_half2_kernel<<<
+                        blocks_for(channel_elements / 2), kThreads, 0,
+                        stream_.get()>>>(
+                        residual_b_.get<T>(), residual_a_.get<T>(),
+                        projected_.get<T>(), channel_elements);
+                } else {
+                    residual_kernel<T><<<
+                        blocks_for(channel_elements), kThreads, 0,
+                        stream_.get()>>>(
+                        residual_b_.get<T>(), residual_a_.get<T>(),
+                        projected_.get<T>(), channel_elements);
+                }
             }
             check_last_kernel("attention residual");
 
-            layernorm_kernel<T><<<batch_size, kThreads, 0, stream_.get()>>>(
-                normalized_.get<T>(), residual_b_.get<T>(),
-                parameters_view.ln2w +
-                    static_cast<std::size_t>(layer) * channels,
-                parameters_view.ln2b +
-                    static_cast<std::size_t>(layer) * channels,
-                batch_size, channels);
-            check_last_kernel("layernorm ln2");
+            if (!config_.enable_fused_residual_layernorm) {
+                layernorm_kernel<T><<<
+                    batch_size, kThreads, 0, stream_.get()>>>(
+                    normalized_.get<T>(), residual_b_.get<T>(),
+                    parameters_view.ln2w +
+                        static_cast<std::size_t>(layer) * channels,
+                    parameters_view.ln2b +
+                        static_cast<std::size_t>(layer) * channels,
+                    batch_size, channels);
+                check_last_kernel("layernorm ln2");
+            }
             matmul(
                 hidden_.get<T>(), normalized_.get<T>(),
                 parameters_view.fcw +
@@ -901,27 +987,46 @@ private:
                 parameters_view.fcprojb +
                     static_cast<std::size_t>(layer) * channels,
                 batch_size, hidden_width, channels);
-            if constexpr (std::is_same<T, __half>::value) {
-                residual_half2_kernel<<<
-                    blocks_for(channel_elements / 2), kThreads, 0,
-                    stream_.get()>>>(
-                    residual_a_.get<T>(), residual_b_.get<T>(),
-                    projected_.get<T>(), channel_elements);
+            if (config_.enable_fused_residual_layernorm) {
+                const bool has_next_layer = layer + 1 < config_.num_layers;
+                const T* norm_weight = has_next_layer
+                    ? parameters_view.ln1w +
+                        static_cast<std::size_t>(layer + 1) * channels
+                    : parameters_view.lnfw;
+                const T* norm_bias = has_next_layer
+                    ? parameters_view.ln1b +
+                        static_cast<std::size_t>(layer + 1) * channels
+                    : parameters_view.lnfb;
+                residual_layernorm_kernel<T><<<
+                    batch_size, kThreads, 0, stream_.get()>>>(
+                    residual_a_.get<T>(), normalized_.get<T>(),
+                    residual_b_.get<T>(), projected_.get<T>(),
+                    norm_weight, norm_bias, batch_size, channels);
             } else {
-                residual_kernel<T><<<
-                    blocks_for(channel_elements), kThreads, 0,
-                    stream_.get()>>>(
-                    residual_a_.get<T>(), residual_b_.get<T>(),
-                    projected_.get<T>(), channel_elements);
+                if constexpr (std::is_same<T, __half>::value) {
+                    residual_half2_kernel<<<
+                        blocks_for(channel_elements / 2), kThreads, 0,
+                        stream_.get()>>>(
+                        residual_a_.get<T>(), residual_b_.get<T>(),
+                        projected_.get<T>(), channel_elements);
+                } else {
+                    residual_kernel<T><<<
+                        blocks_for(channel_elements), kThreads, 0,
+                        stream_.get()>>>(
+                        residual_a_.get<T>(), residual_b_.get<T>(),
+                        projected_.get<T>(), channel_elements);
+                }
             }
             check_last_kernel("MLP residual");
         }
 
-        layernorm_kernel<T><<<batch_size, kThreads, 0, stream_.get()>>>(
-            normalized_.get<T>(), residual_a_.get<T>(),
-            parameters_view.lnfw, parameters_view.lnfb,
-            batch_size, channels);
-        check_last_kernel("final layernorm");
+        if (!config_.enable_fused_residual_layernorm) {
+            layernorm_kernel<T><<<batch_size, kThreads, 0, stream_.get()>>>(
+                normalized_.get<T>(), residual_a_.get<T>(),
+                parameters_view.lnfw, parameters_view.lnfb,
+                batch_size, channels);
+            check_last_kernel("final layernorm");
+        }
         logits_matmul(
             normalized_.get<T>(), parameters_view.wte,
             batch_size, channels, config_.padded_vocab_size);
@@ -1038,6 +1143,10 @@ std::size_t GPT2CudaModelRunner::activation_bytes() const {
 
 CudaDataType GPT2CudaModelRunner::data_type() const {
     return impl_->data_type();
+}
+
+std::size_t GPT2CudaModelRunner::num_cuda_graphs() const {
+    return impl_->num_cuda_graphs();
 }
 
 } // namespace cuda

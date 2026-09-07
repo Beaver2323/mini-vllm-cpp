@@ -116,20 +116,26 @@ static StepValidation validate_and_commit(
 
 int main(int argc, char** argv) {
     CudaDataType data_type = CudaDataType::FP32;
-    if (argc == 3 && std::string(argv[1]) == "--precision") {
-        const std::string precision = argv[2];
-        if (precision == "fp16") {
-            data_type = CudaDataType::FP16;
-        } else if (precision == "bf16") {
-            data_type = CudaDataType::BF16;
-        } else if (precision != "fp32") {
+    bool enable_fusion = true;
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument = argv[index];
+        if (argument == "--precision" && index + 1 < argc) {
+            const std::string precision = argv[++index];
+            if (precision == "fp16") {
+                data_type = CudaDataType::FP16;
+            } else if (precision == "bf16") {
+                data_type = CudaDataType::BF16;
+            } else if (precision != "fp32") {
+                throw std::invalid_argument(
+                    "precision must be fp32, fp16, or bf16");
+            }
+        } else if (argument == "--disable-fusion") {
+            enable_fusion = false;
+        } else {
             throw std::invalid_argument(
-                "precision must be fp32, fp16, or bf16");
+                "usage: test_gpt2_cuda_model_runner "
+                "[--precision fp32|fp16|bf16] [--disable-fusion]");
         }
-    } else if (argc != 1) {
-        throw std::invalid_argument(
-            "usage: test_gpt2_cuda_model_runner "
-            "[--precision fp32|fp16|bf16]");
     }
 
     GPT2 model{};
@@ -151,6 +157,7 @@ int main(int argc, char** argv) {
         model.config.num_heads,
         model.config.channels,
         data_type,
+        enable_fusion,
     };
     GPT2CudaModelRunner runner(
         cuda_config, model.params_memory, model.num_parameters,
@@ -222,6 +229,8 @@ int main(int argc, char** argv) {
         << "CUDA GPT2ModelRunner test passed: precision="
         << (data_type == CudaDataType::FP16 ? "fp16" :
             (data_type == CudaDataType::BF16 ? "bf16" : "fp32"))
+        << ", residual_layernorm_fusion="
+        << (enable_fusion ? "on" : "off")
         << ", full GPU decode, mixed batch, cross-page growth, block reuse\n"
         << "max_abs_logit_error=" << global_max_abs_logit_error << '\n'
         << "argmax_mismatches=" << total_argmax_mismatches << '\n'

@@ -24,6 +24,8 @@ struct GPT2CudaConfig {
     int num_heads = 0;
     int channels = 0;
     CudaDataType data_type = CudaDataType::FP32;
+    bool enable_fused_residual_layernorm = true;
+    bool enable_cuda_graph = false;
 };
 
 class GPT2CudaModelRunner {
@@ -48,6 +50,7 @@ public:
     std::size_t kv_cache_bytes() const;
     std::size_t activation_bytes() const;
     CudaDataType data_type() const;
+    std::size_t num_cuda_graphs() const;
 
 private:
     class Impl;
