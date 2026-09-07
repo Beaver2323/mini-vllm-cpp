@@ -248,7 +248,7 @@ else
 endif
 
 # PHONY means these targets will always be executed
-.PHONY: all train_gpt2 test_gpt2 train_gpt2_cpp mini_vllm_demo test_minivllm_control_plane test_gpt2_paged_inference train_gpt2cu test_gpt2cu train_gpt2fp32cu test_gpt2fp32cu profile_gpt2cu
+.PHONY: all train_gpt2 test_gpt2 train_gpt2_cpp mini_vllm_demo mini_vllm_gpt2_demo test_minivllm_control_plane test_gpt2_paged_inference test_gpt2_engine train_gpt2cu test_gpt2cu train_gpt2fp32cu test_gpt2fp32cu profile_gpt2cu
 
 # Add targets
 TARGETS = train_gpt2 test_gpt2 train_gpt2_cpp
@@ -280,7 +280,13 @@ test_minivllm_control_plane: dev/test_mini_vllm_control_plane.cpp
 mini_vllm_demo: mini_vllm/demo.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(LDFLAGS) $< $(LDLIBS) $(OUTPUT_FILE)
 
+mini_vllm_gpt2_demo: mini_vllm/gpt2_engine_demo.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(LDFLAGS) $< $(LDLIBS) $(OUTPUT_FILE)
+
 test_gpt2_paged_inference: dev/test_gpt2_paged_inference.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(LDFLAGS) $< $(LDLIBS) $(OUTPUT_FILE)
+
+test_gpt2_engine: dev/test_gpt2_engine.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(LDFLAGS) $< $(LDLIBS) $(OUTPUT_FILE)
 
 $(NVCC_CUDNN): llmc/cudnn_att.cpp

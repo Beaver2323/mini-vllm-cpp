@@ -1,8 +1,15 @@
+#ifndef MINI_VLLM_TRAIN_GPT2_CPP
+#define MINI_VLLM_TRAIN_GPT2_CPP
+
 // Enable TESTING macro to prevent compiling the int main() from the included C file.
 // This gives us access to all the original structs, weights, and layers.
 #define TESTING
 #include "train_gpt2.c"
 #include "paged_kv_cache.hpp"
+
+#include <cstddef>
+#include <stdexcept>
+#include <vector>
 
 // Re-implement sampling utilities which are skipped by #define TESTING
 unsigned int random_u32(uint64_t *state) {
@@ -26,17 +33,132 @@ int sample_mult(float* probabilities, int n, float coin) {
     return n - 1;
 }
 
-// 专为自回归生成设计的单步前向传播推理函数 (仅处理 T=1 的输入)。
-// 区别于原版每次重新计算序列所有位置的前向，该函数通过 `inputs` 只传入最新生成的一个 token。
-// 然后依赖 KVCachePool 保存的上下文状态（历史 KV）计算新 Token 的注意力输出。
-// 这样把原本 O(T^2) 的计算量大幅降低到了 O(T)，不仅大大加速推理，也支持了更灵活的分页显存管理。
-void gpt2_forward_inference_batched(GPT2 *model, int* inputs, KVCachePool* pool,
-                                    PageTable* page_table, int active_batch_size) {
-    if (active_batch_size <= 0 || active_batch_size > model->batch_size) {
-        fprintf(stderr, "active inference batch %d exceeds activation capacity %d\n",
-                active_batch_size, model->batch_size);
-        exit(EXIT_FAILURE);
+// 增量推理专用工作区。它按 T=1 分配模型中间结果，并单独分配线性大小的
+// Attention scratch，避免为了推理而创建训练前向所需的 T² 激活内存。
+class GPT2InferenceWorkspace {
+public:
+    GPT2InferenceWorkspace(GPT2Config config, int max_batch_size,
+                           int max_context_length)
+        : max_batch_size_(max_batch_size),
+          max_context_length_(max_context_length) {
+        if (max_batch_size <= 0 || max_context_length <= 0 ||
+            max_context_length > config.max_seq_len) {
+            throw std::invalid_argument("invalid GPT-2 inference workspace shape");
+        }
+        fill_in_activation_sizes(act_sizes_, config, max_batch_size, 1);
+        // PagedAttention 使用独立 scratch；greedy decoding 直接对 logits
+        // 取 argmax，不需要训练 Attention、概率和 loss 缓冲。
+        act_sizes_[6] = 0;   // preatt
+        act_sizes_[7] = 0;   // att
+        act_sizes_[21] = 0;  // probs
+        act_sizes_[22] = 0;  // losses
+        for (std::size_t size : act_sizes_) {
+            num_activations_ += size;
+        }
+        attention_scratch_.resize(
+            static_cast<std::size_t>(max_batch_size) * config.num_heads *
+            max_context_length);
+        acts_memory_ = malloc_and_point_activations(&acts_, act_sizes_);
     }
+
+    ~GPT2InferenceWorkspace() { free(acts_memory_); }
+
+    GPT2InferenceWorkspace(const GPT2InferenceWorkspace&) = delete;
+    GPT2InferenceWorkspace& operator=(const GPT2InferenceWorkspace&) = delete;
+
+    int max_batch_size() const { return max_batch_size_; }
+    int max_context_length() const { return max_context_length_; }
+    std::size_t num_activations() const { return num_activations_; }
+    ActivationTensors& acts() { return acts_; }
+    const ActivationTensors& acts() const { return acts_; }
+    float* attention_scratch() { return attention_scratch_.data(); }
+    std::size_t attention_scratch_size() const {
+        return attention_scratch_.size();
+    }
+
+private:
+    int max_batch_size_;
+    int max_context_length_;
+    ActivationTensors acts_{};
+    std::size_t act_sizes_[NUM_ACTIVATION_TENSORS]{};
+    float* acts_memory_ = nullptr;
+    std::size_t num_activations_ = 0;
+    std::vector<float> attention_scratch_;
+};
+
+static void validate_paged_inference_inputs(
+    const GPT2* model, const int* inputs, const KVCachePool* pool,
+    const PageTable* page_table, int active_batch_size,
+    int max_batch_size, int max_context_length,
+    std::size_t attention_scratch_size) {
+    if (model == nullptr || model->params_memory == nullptr || inputs == nullptr ||
+        pool == nullptr || page_table == nullptr) {
+        throw std::invalid_argument("paged inference received a null input");
+    }
+    if (active_batch_size <= 0 || active_batch_size > max_batch_size) {
+        throw std::out_of_range("active inference batch exceeds workspace capacity");
+    }
+    if (max_context_length <= 0 ||
+        max_context_length > model->config.max_seq_len) {
+        throw std::out_of_range("inference context capacity exceeds model limit");
+    }
+    if (pool->num_layers != model->config.num_layers ||
+        pool->num_heads != model->config.num_heads ||
+        pool->head_size * pool->num_heads != model->config.channels) {
+        throw std::invalid_argument("KV cache shape does not match GPT-2");
+    }
+    if (page_table->max_blocks_per_seq <= 0 ||
+        page_table->context_lengths.size() <
+            static_cast<std::size_t>(active_batch_size) ||
+        page_table->block_tables.size() <
+            static_cast<std::size_t>(active_batch_size) *
+                page_table->max_blocks_per_seq) {
+        throw std::invalid_argument("page table shape is invalid");
+    }
+    const std::size_t required_scratch =
+        static_cast<std::size_t>(active_batch_size) *
+        model->config.num_heads * max_context_length;
+    if (attention_scratch_size < required_scratch) {
+        throw std::out_of_range("attention scratch is too small");
+    }
+
+    for (int b = 0; b < active_batch_size; ++b) {
+        if (inputs[b] < 0 || inputs[b] >= model->config.vocab_size) {
+            throw std::out_of_range("input token is outside the vocabulary");
+        }
+        const int context_length = page_table->context_lengths[b];
+        if (context_length <= 0 || context_length > max_context_length) {
+            throw std::out_of_range("request context length is invalid");
+        }
+        const int required_blocks =
+            (context_length + pool->page_size - 1) / pool->page_size;
+        if (required_blocks > page_table->max_blocks_per_seq) {
+            throw std::out_of_range("request exceeds page table capacity");
+        }
+        for (int logical_block = 0; logical_block < required_blocks;
+             ++logical_block) {
+            const int block_id =
+                page_table->block_tables[
+                    b * page_table->max_blocks_per_seq + logical_block];
+            if (block_id < 0 || block_id >= pool->num_pages) {
+                throw std::out_of_range("page table references an invalid block");
+            }
+        }
+    }
+}
+
+// 专为自回归生成设计的单步前向传播。每个 Batch 行只包含一个新 Token，
+// 而历史 K/V 通过各请求自己的 Block Table 和 context length 读取。
+static void gpt2_forward_inference_impl(
+    const GPT2* model, const int* inputs, KVCachePool* pool,
+    const PageTable* page_table, int active_batch_size,
+    ActivationTensors acts, float* attention_scratch,
+    std::size_t attention_scratch_size, int layer_batch_capacity,
+    int max_context_length, bool compute_probabilities) {
+    validate_paged_inference_inputs(
+        model, inputs, pool, page_table, active_batch_size,
+        layer_batch_capacity, max_context_length, attention_scratch_size);
+
     size_t B = static_cast<size_t>(active_batch_size);
     size_t V = model->config.vocab_size;
     size_t Vp = model->config.padded_vocab_size;
@@ -44,8 +166,8 @@ void gpt2_forward_inference_batched(GPT2 *model, int* inputs, KVCachePool* pool,
     size_t NH = model->config.num_heads;
     size_t C = model->config.channels;
 
-    ActivationTensors acts = model->acts;
     ParameterTensors params = model->params;
+    const size_t layer_stride = static_cast<size_t>(layer_batch_capacity);
 
     float* encoded = acts.encoded;
     for (size_t b = 0; b < B; b++) {
@@ -60,47 +182,83 @@ void gpt2_forward_inference_batched(GPT2 *model, int* inputs, KVCachePool* pool,
         }
     }
 
-    float* residual;
-    // 重用模型中现有的巨大 preatt 缓冲区作为注意力分数的临时计算内存
-    float* att_buffer = acts.preatt;
-
     for (size_t l = 0; l < L; l++) {
-        residual = l == 0 ? acts.encoded : acts.residual3 + (l-1) * B * C;
+        const size_t layer_offset = l * layer_stride;
+        float* residual =
+            l == 0 ? acts.encoded
+                   : acts.residual3 + (l - 1) * layer_stride * C;
 
-        float* l_ln1 = acts.ln1;
-        float* l_qkv = acts.qkv;
-        float* l_atty = acts.atty;
-        float* l_attproj = acts.attproj;
-        float* l_residual2 = acts.residual2;
-        float* l_ln2 = acts.ln2;
-        float* l_fch = acts.fch;
-        float* l_fch_gelu = acts.fch_gelu;
-        float* l_fcproj = acts.fcproj;
-        float* l_residual3 = acts.residual3 + l * B * C;
+        float* l_ln1 = acts.ln1 + layer_offset * C;
+        float* l_ln1_mean = acts.ln1_mean + layer_offset;
+        float* l_ln1_rstd = acts.ln1_rstd + layer_offset;
+        float* l_qkv = acts.qkv + layer_offset * 3 * C;
+        float* l_atty = acts.atty + layer_offset * C;
+        float* l_attproj = acts.attproj + layer_offset * C;
+        float* l_residual2 = acts.residual2 + layer_offset * C;
+        float* l_ln2 = acts.ln2 + layer_offset * C;
+        float* l_ln2_mean = acts.ln2_mean + layer_offset;
+        float* l_ln2_rstd = acts.ln2_rstd + layer_offset;
+        float* l_fch = acts.fch + layer_offset * 4 * C;
+        float* l_fch_gelu = acts.fch_gelu + layer_offset * 4 * C;
+        float* l_fcproj = acts.fcproj + layer_offset * C;
+        float* l_residual3 = acts.residual3 + layer_offset * C;
 
         // 逐层前向传播，但注意此时张量的序列长度 T=1
         // 因此我们在原版算子的最后一个参数传入了 1
-        layernorm_forward(l_ln1, acts.ln1_mean, acts.ln1_rstd, residual, params.ln1w + l*C, params.ln1b + l*C, B, 1, C);
+        layernorm_forward(l_ln1, l_ln1_mean, l_ln1_rstd, residual, params.ln1w + l*C, params.ln1b + l*C, B, 1, C);
         matmul_forward(l_qkv, l_ln1, params.qkvw + l*3*C*C, params.qkvb + l*3*C, B, 1, C, 3*C);
 
         // 使用我们新编写的 Paged Attention 替换掉原本原生的 attention_forward
-        paged_attention_forward(l_atty, l_qkv, pool, page_table, att_buffer, l,
-                                B, page_table->context_lengths[0], C, NH,
-                                model->config.max_seq_len);
+        paged_attention_forward(
+            l_atty, l_qkv, pool, page_table, attention_scratch,
+            static_cast<int>(l), static_cast<int>(B), 0,
+            static_cast<int>(C), static_cast<int>(NH), max_context_length);
 
         matmul_forward(l_attproj, l_atty, params.attprojw + l*C*C, params.attprojb + l*C, B, 1, C, C);
         residual_forward(l_residual2, residual, l_attproj, B*C);
 
-        layernorm_forward(l_ln2, acts.ln2_mean, acts.ln2_rstd, l_residual2, params.ln2w + l*C, params.ln2b + l*C, B, 1, C);
+        layernorm_forward(l_ln2, l_ln2_mean, l_ln2_rstd, l_residual2, params.ln2w + l*C, params.ln2b + l*C, B, 1, C);
         matmul_forward(l_fch, l_ln2, params.fcw + l*4*C*C, params.fcb + l*4*C, B, 1, C, 4*C);
         gelu_forward(l_fch_gelu, l_fch, B*4*C);
         matmul_forward(l_fcproj, l_fch_gelu, params.fcprojw + l*C*4*C, params.fcprojb + l*C, B, 1, 4*C, C);
         residual_forward(l_residual3, l_residual2, l_fcproj, B*C);
     }
 
-    layernorm_forward(acts.lnf, acts.lnf_mean, acts.lnf_rstd, acts.residual3 + (L-1)*B*C, params.lnfw, params.lnfb, B, 1, C);
+    layernorm_forward(
+        acts.lnf, acts.lnf_mean, acts.lnf_rstd,
+        acts.residual3 + (L - 1) * layer_stride * C,
+        params.lnfw, params.lnfb, B, 1, C);
     matmul_forward(acts.logits, acts.lnf, params.wte, NULL, B, 1, C, Vp);
-    softmax_forward(acts.probs, acts.logits, B, 1, V, Vp);
+    if (compute_probabilities) {
+        softmax_forward(acts.probs, acts.logits, B, 1, V, Vp);
+    }
+}
+
+void gpt2_forward_inference_with_workspace(
+    const GPT2* model, const int* inputs, KVCachePool* pool,
+    const PageTable* page_table, int active_batch_size,
+    GPT2InferenceWorkspace* workspace) {
+    if (workspace == nullptr) {
+        throw std::invalid_argument("GPT-2 inference workspace is null");
+    }
+    gpt2_forward_inference_impl(
+        model, inputs, pool, page_table, active_batch_size, workspace->acts(),
+        workspace->attention_scratch(), workspace->attention_scratch_size(),
+        workspace->max_batch_size(), workspace->max_context_length(),
+        /*compute_probabilities=*/false);
+}
+
+// 兼容早期测试和示例：继续使用 model->acts，但新引擎应使用独立 Workspace。
+void gpt2_forward_inference_batched(
+    GPT2* model, int* inputs, KVCachePool* pool,
+    PageTable* page_table, int active_batch_size) {
+    if (model == nullptr || model->acts_memory == nullptr) {
+        throw std::logic_error("model activations are not initialized");
+    }
+    gpt2_forward_inference_impl(
+        model, inputs, pool, page_table, active_batch_size, model->acts,
+        model->acts.preatt, model->act_sizes[6], active_batch_size,
+        model->config.max_seq_len, /*compute_probabilities=*/true);
 }
 
 void gpt2_forward_inference(GPT2 *model, int* inputs, KVCachePool* pool,
@@ -208,3 +366,5 @@ int main() {
     }
 }
 #endif
+
+#endif // MINI_VLLM_TRAIN_GPT2_CPP

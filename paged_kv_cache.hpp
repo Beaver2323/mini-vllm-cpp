@@ -5,6 +5,7 @@
 #include <iostream>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 
 // 定义每个物理页的大小（即一个 Page 可以存放多少个 Token 的 KV 向量）
 #define PAGE_SIZE 16
@@ -46,6 +47,9 @@ struct KVCachePool {
         num_free_pages = num_pages;
     }
 
+    KVCachePool(const KVCachePool&) = delete;
+    KVCachePool& operator=(const KVCachePool&) = delete;
+
     ~KVCachePool() {
         free(k_cache);
         free(v_cache);
@@ -70,7 +74,7 @@ struct PageTable {
     std::vector<int> context_lengths; // 当前每个序列已生成的上下文长度 (Token 数量), 维度: [B]
 
     PageTable(int B, int max_blocks_per_seq) : max_blocks_per_seq(max_blocks_per_seq) {
-        block_tables.resize(B * max_blocks_per_seq, 0);
+        block_tables.resize(B * max_blocks_per_seq, -1);
         context_lengths.resize(B, 0);
     }
 };
@@ -80,7 +84,7 @@ struct PageTable {
 // 并按权重对 Values 进行求和。
 inline void paged_attention_forward(float* out,
                                     float* qkv,
-                                    KVCachePool* pool, PageTable* page_table, float* att_buffer,
+                                    KVCachePool* pool, const PageTable* page_table, float* att_buffer,
                                     int layer_idx, int B, int seq_len, int C, int NH, int max_seq_len) {
     int hs = C / NH;//将一个token的总特征维度，分给每一个注意力头
     float scale = 1.0f / sqrtf(hs);
@@ -118,7 +122,7 @@ inline void paged_attention_forward(float* out,
             }
 
             // 步骤 2: 计算当前 Query 与历史所有 Keys 的未归一化注意力得分 (Pre-attention)
-            float maxval = -10000.0f; // 用于 Softmax 的数值稳定性
+            float maxval = -std::numeric_limits<float>::infinity();
             float* preatt = att_buffer + b * NH * max_seq_len + h * max_seq_len; // 使用 att_buffer 保存当前头的计算结果
 
             // 遍历所有过去的 token（包括刚刚写入的最新 token）

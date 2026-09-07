@@ -16,7 +16,7 @@
 | BlockManager | 已完成第一版 | 跨块分配、释放、FIFO 复用、double-free 检测 |
 | Scheduler | 已完成第一版 | Token Budget、Chunked Prefill、动态加入/退出 |
 | 动态 Batch 执行原语 | 已完成 | 每个请求独立 context length，支持中途加入和提前退出 |
-| Scheduler/ModelRunner 闭环 | 未完成 | 下一阶段把调度元数据连接到 GPT-2 |
+| Scheduler/ModelRunner 闭环 | 已完成 CPU 基线 | 混合 Decode/Chunked Prefill、greedy sample、commit/release |
 | 抢占与 Prefix Cache | 未完成 | Block 引用计数已预留 |
 | CUDA Paged Attention | 未完成 | CPU 实现作为后续 reference |
 
@@ -27,9 +27,9 @@
 误差均为 0。
 测试入口为 `dev/test_gpt2_paged_inference.cpp`。
 
-当前 Scheduler 是模型无关控制面；GPT-2 执行原语已经支持异长动态 Batch。二者尚未通过
-ModelRunner 接口闭环，因此简历可以陈述“请求调度设计”和“动态 Batch 正确性验证”，
-不能声称已经完成端到端 Continuous Batching 性能优化。
+Scheduler、GPT2ModelRunner 和 GPT-2 异长动态 Batch 已经形成端到端闭环。模型级测试
+覆盖混合 Decode/Chunked Prefill、动态加入/退出、跨页扩容、Block 回收复用，并确认
+greedy 输出与完整前缀前向一致。当前仍是 CPU 正确性基线，尚未完成性能 Benchmark。
 
 ## 代码地图
 
@@ -46,6 +46,15 @@ mini_vllm/scheduler.hpp
 mini_vllm/demo.cpp
   使用确定性假 ModelRunner 展示每轮请求与 Block 状态
 
+mini_vllm/gpt2_model_runner.hpp
+  将调度结果拆成动态微批次并构造执行元数据
+
+mini_vllm/gpt2_engine.hpp
+  schedule → run → sample → commit/release 闭环
+
+mini_vllm/gpt2_engine_demo.cpp
+  使用真实 GPT-2 权重演示连续批处理
+
 dev/test_mini_vllm_control_plane.cpp
   控制面回归测试
 
@@ -54,6 +63,9 @@ paged_kv_cache.hpp
 
 dev/test_gpt2_paged_inference.cpp
   两请求动态 Batch 与完整前缀 GPT-2 的全词表正确性对照
+
+dev/test_gpt2_engine.cpp
+  Continuous Batching 端到端及完整前缀对齐测试
 ```
 
 编译和运行：
@@ -61,10 +73,13 @@ dev/test_gpt2_paged_inference.cpp
 ```bash
 cd /home/users/zyf/zyf_llm.c/llm.c
 conda run -p /home/miniconda3/envs/zyf1 make \
-  test_minivllm_control_plane test_gpt2_paged_inference mini_vllm_demo
+  test_minivllm_control_plane test_gpt2_paged_inference test_gpt2_engine \
+  mini_vllm_demo mini_vllm_gpt2_demo
 conda run -p /home/miniconda3/envs/zyf1 ./test_minivllm_control_plane
 OMP_NUM_THREADS=16 conda run -p /home/miniconda3/envs/zyf1 ./test_gpt2_paged_inference
+OMP_NUM_THREADS=16 conda run -p /home/miniconda3/envs/zyf1 ./test_gpt2_engine
 conda run -p /home/miniconda3/envs/zyf1 ./mini_vllm_demo
+OMP_NUM_THREADS=16 conda run -p /home/miniconda3/envs/zyf1 ./mini_vllm_gpt2_demo
 ```
 
 ## nano-vLLM 参考环境
@@ -108,9 +123,9 @@ TTFT、TPOT、吞吐、P50/P95 延迟和显存占用。
 
 CUDA Graph 模式在 smoke 命令末尾增加 `--cuda-graph`。
 
-## 下一阶段的接口
+## 已完成的 ModelRunner 接口
 
-下一步实现 `GPT2ModelRunner`：
+已实现的 `GPT2ModelRunner` 使用以下核心元数据：
 
 ```cpp
 struct ModelInput {
@@ -135,8 +150,11 @@ public:
 - `slot_mapping`：新 K/V 应写入的物理 Block 和页内偏移。
 - `block_tables`：Attention 读取历史 K/V 时的逻辑到物理映射。
 
-实现顺序：先完成相同长度 Decode Batch，再支持异长 Decode，最后混合 Chunked Prefill
-与 Decode。每一步都要和完整前缀 GPT-2 最后位置 logits 对齐。
+Chunked Prefill 在 ModelRunner 内拆成单 Token 微步，每个微步压紧当前仍有工作的请求。
+这种实现先保证异长 Batch 的映射正确；后续可增加多 Token Prefill 专用执行路径。
+
+下一阶段先建立完整前缀重算、分页增量和 Continuous Batching 三组可信 Benchmark，
+再将 CPU PagedAttention 替换为 CUDA kernel。
 
 ## 学习 nano-vLLM 的顺序
 

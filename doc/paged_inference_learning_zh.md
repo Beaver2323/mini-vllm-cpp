@@ -142,10 +142,10 @@ OMP_NUM_THREADS=2 conda run -p /home/miniconda3/envs/zyf1 /tmp/zyf_paged_attenti
 
 下面均为待实现项，按建议顺序推进。
 
-1. **独立推理入口与工作区**：移除对先执行训练/验证前向来初始化激活的依赖，按推理形状分配缓冲，避免沿用训练的 T² Attention 激活。
-2. **控制面接入模型**：将已实现的 Sequence、BlockManager 和 Scheduler 输出整理为 token、position、context length、slot mapping 与 block table，连接 GPT-2 ModelRunner。
-3. **可信 benchmark**：比较完整前缀重算、连续 KV、分页 KV 三组；固定权重、Token、线程数、编译选项及长度，记录预热后多次延迟、吞吐、内存口径。
-4. **调度与执行闭环**：异长动态 Batch 原语已完成；下一步让 Scheduler 驱动 ModelRunner，并在请求退出时由同一引擎路径回收页。
+1. **独立推理入口与工作区（已完成）**：按 T=1 推理形状分配缓冲，并单独分配线性 Attention scratch。
+2. **控制面接入模型（已完成）**：ModelRunner 已整理 token、position、context length、slot mapping 与 block table。
+3. **调度与执行闭环（已完成）**：Engine 已连接 schedule、run、greedy sample、commit 和页回收。
+4. **可信 Benchmark（下一步）**：比较完整前缀重算、分页增量和连续批处理；固定权重、Token、线程数、编译选项及长度，记录预热后多次延迟、吞吐和内存口径。
 5. **设备算子扩展**：实现 CUDA 或 Triton decode kernel，再分析显存管理、访存布局和 profiling。
 
 现有细节也值得修复：页表初始化为 0 会把未分配项伪装成合法页；softmax 最大值初值应使用负无穷而不是 -10000；裸指针所有权需要禁用拷贝或使用 RAII；推理入口缺少 Token 和上下文长度等输入校验。
@@ -153,7 +153,7 @@ OMP_NUM_THREADS=2 conda run -p /home/miniconda3/envs/zyf1 /tmp/zyf_paged_attenti
 
 ## 9. 一分钟项目讲述
 
-“我基于 llm.c 的 GPT-2 实现扩展了 CPU 增量推理路径。原生成路径重复执行完整序列前向，我改成每步处理一个 Token，并缓存每层历史 K/V。在缓存组织上，我实现了 16 Token 一页的 KV 池，用序列页表把逻辑 Token 映射到不连续的缓存块，Attention 通过页表读写 K/V。算子按 batch 和 head 做 OpenMP 并行。目前补充了多层、多头、跨页和打乱页号的独立参考验证。当前是 CPU 原型，下一步重点是独立推理工作区、页回收以及连续 KV 对照 benchmark。”
+“我基于 llm.c 的 GPT-2 实现扩展了 CPU 增量推理路径，每步只处理新 Token，并缓存每层历史 K/V。我实现了 16 Token 一页的 KV Block Pool 和页表寻址，并用 BlockManager 管理请求的分配、释放和复用。在控制面上，我实现 Token Budget 和 Chunked Prefill Scheduler，再通过 GPT2ModelRunner 将调度结果转换为异长动态微批次，形成 schedule、run、sample、commit 的连续批处理闭环。测试覆盖 Decode 与 Prefill 混合、动态请求、跨页和 Block 复用，生成 Token 与完整前缀 GPT-2 一致。当前是 CPU 正确性基线，下一步建立 Benchmark 后实现 CUDA PagedAttention。”
 
 理解每句话再用于面试。新增测试是在本次协作中补充的，应先读懂参考实现与测试覆盖范围。
 
@@ -162,7 +162,7 @@ OMP_NUM_THREADS=2 conda run -p /home/miniconda3/envs/zyf1 /tmp/zyf_paged_attenti
 1. 若页表从 `[0,1,2]` 换成 `[5,2,9]`，输出应该变化吗？不应，前提是数据同步存放到相应页。
 2. 为什么第 17 个 Token 要申请新页？它下标为 16，已有页只容纳下标 0..15。
 3. PagedAttention 是否天然比连续 KV 更快？没有这种保证；它改变缓存组织，也增加地址间接访问。
-4. 为什么还不能把当前代码称为端到端 continuous batching？Scheduler 与异长动态 Batch 执行原语都已存在，但尚未由 ModelRunner 串成同一条引擎路径。
+4. 当前 continuous batching 闭环在哪里？`GPT2Engine::step` 依次调用 schedule、ModelRunner、greedy sample 和 commit，并在请求完成时释放 Block。
 5. `free_pages` 是栈，是否意味着 CPU 调用栈或栈帧？不是，它是 vector 实现的索引栈，`num_free_pages` 表示有效空闲项数量。
 6. 怎么证明速度收益来自哪里？用完整前缀重算→连续 KV 衡量缓存收益，再用连续 KV→分页 KV 分离布局与页管理影响。
 

@@ -1,5 +1,7 @@
 # 开发任务 01：接通 Scheduler 与 GPT2ModelRunner
 
+**状态：已完成。**
+
 ## 为什么这是下一步
 
 项目现在已经有两部分能力：
@@ -7,10 +9,8 @@
 1. Sequence、BlockManager、Scheduler 能决定“本轮计算哪些请求、计算多少 Token”。
 2. GPT-2 增量前向能根据每个请求独立的 context length 读写分页 KV Cache。
 
-两部分还没有通过统一的 ModelRunner 接口连接。因此，当前可以验证调度逻辑和模型执行
-原语，但还不能通过一个 Engine 循环完成真正的 Continuous Batching。
-
-本任务的目标是把调度结果变成模型输入，再把模型输出提交回 Scheduler。
+本任务已经通过统一 ModelRunner 接口连接这两部分：调度结果会转换为模型输入，模型输出
+经过 greedy sampling 后提交回 Scheduler，完成请求状态更新和 Block 回收。
 
 ## 需要建立的数据结构
 
@@ -84,13 +84,17 @@ while (!scheduler.is_finished()) {
 
 ## 验收标准
 
-- 两个以上异长请求能够在不同时间加入。
-- 同一轮能够同时处理至少一个 Decode 请求和一个 Chunked Prefill 请求。
-- 请求完成后 Block 数量立即恢复，后续请求能够复用这些 Block。
-- 每个请求生成的 greedy token 与独立完整前缀重算结果一致。
-- 覆盖第 16→17、32→33 Token 的跨页扩容。
-- Scheduler 没有可运行工作时不能出现死循环。
-- AddressSanitizer 和 UndefinedBehaviorSanitizer 检查通过。
+- [x] 两个以上异长请求能够在不同时间加入。
+- [x] 同一轮能够同时处理至少一个 Decode 请求和一个 Chunked Prefill 请求。
+- [x] 请求完成后 Block 数量立即恢复，后续请求能够复用这些 Block。
+- [x] 每个请求生成的 greedy token 与独立完整前缀重算结果一致。
+- [x] 覆盖第 16→17 Token 的跨页扩容；既有模型测试覆盖第 32→33 Token。
+- [x] Scheduler 无法产生工作时由 Engine 报错，避免静默死循环。
+- [x] AddressSanitizer 和 UndefinedBehaviorSanitizer 检查通过。
+
+端到端测试入口为 `dev/test_gpt2_engine.cpp`。测试还验证了独立推理 Workspace：
+该场景使用 435,556 个模型激活元素，而 B=3、T=18 的完整前缀 reference 使用
+14,756,418 个激活元素。这个数字只描述该固定测试形状，不是通用显存节省比例。
 
 ## 完成后再做什么
 

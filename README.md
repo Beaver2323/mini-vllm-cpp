@@ -16,8 +16,8 @@ LLM 推理引擎。项目使用 C++ 实现推理执行路径，并参考 vLLM �
 | Sequence | 已完成 | 管理请求状态、Prompt、输出 Token 和已计算 Token 数 |
 | BlockManager | 已完成第一版 | 支持 Block 分配、释放、复用和异常检查 |
 | Scheduler | 已完成第一版 | 支持 Token Budget、Chunked Prefill 和动态准入/退出 |
-| 异长动态 Batch | 已完成执行原语 | 每个请求拥有独立 context length |
-| Scheduler/ModelRunner 闭环 | 开发中 | 下一阶段核心任务 |
+| 异长动态 Batch | 已完成 | 每个请求拥有独立 context length |
+| Scheduler/ModelRunner 闭环 | 已完成 CPU 基线 | 支持混合 Decode 与 Chunked Prefill |
 | CUDA PagedAttention | 未开始 | CPU 实现将作为正确性参考 |
 | Prefix Cache 与抢占 | 未开始 | Block 引用计数接口已经预留 |
 
@@ -48,8 +48,9 @@ Sampler：生成新 Token
 Scheduler::commit：更新状态，完成时释放 Block
 ```
 
-目前图中的 Sequence、Scheduler、BlockManager、GPT-2 增量前向和 PagedAttention
-已经分别实现。下一步要完成 GPT2ModelRunner，把这些模块连接成同一个端到端循环。
+图中的模块已经连接成端到端执行循环。Scheduler 分配的物理 Block ID 会直接映射到
+KVCachePool；ModelRunner 将 Chunked Prefill 拆成动态微批次，并在完成输入后执行
+greedy sampling 和状态提交。
 
 ## 代码结构
 
@@ -58,12 +59,16 @@ Scheduler::commit：更新状态，完成时释放 Block
 | `mini_vllm/sequence.hpp` | 请求状态和 Token 生命周期 |
 | `mini_vllm/block_manager.hpp` | KV Block 所有权、分配与回收 |
 | `mini_vllm/scheduler.hpp` | Token Budget 和请求调度 |
+| `mini_vllm/gpt2_model_runner.hpp` | 调度元数据、动态微批次和 GPT-2 执行 |
+| `mini_vllm/gpt2_engine.hpp` | schedule、run、sample、commit 执行闭环 |
 | `mini_vllm/demo.cpp` | 不依赖模型的调度过程演示 |
+| `mini_vllm/gpt2_engine_demo.cpp` | 使用真实 GPT-2 权重的连续批处理演示 |
 | `paged_kv_cache.hpp` | 分页 KV Cache 与 CPU PagedAttention |
 | `train_gpt2.cpp` | GPT-2 单 Token 和动态 Batch 增量前向 |
 | `dev/test_mini_vllm_control_plane.cpp` | 调度和缓存管理测试 |
 | `dev/test_paged_attention_resume.cpp` | PagedAttention 稠密参考测试 |
 | `dev/test_gpt2_paged_inference.cpp` | GPT-2 模型级全词表正确性测试 |
+| `dev/test_gpt2_engine.cpp` | Continuous Batching 端到端测试 |
 | `doc/mini_vllm_roadmap_zh.md` | 开发路线、实验结果和学习顺序 |
 | `doc/paged_inference_learning_zh.md` | 分页推理原理与代码讲解 |
 
@@ -80,19 +85,24 @@ make test_minivllm_control_plane mini_vllm_demo
 模型级测试需要在仓库根目录放置 GPT-2 124M 权重文件 `gpt2_124M.bin`：
 
 ```bash
-make test_gpt2_paged_inference
+make test_gpt2_paged_inference test_gpt2_engine mini_vllm_gpt2_demo
 OMP_NUM_THREADS=16 ./test_gpt2_paged_inference
+OMP_NUM_THREADS=16 ./test_gpt2_engine
+OMP_NUM_THREADS=16 ./mini_vllm_gpt2_demo
 ```
 
 在本项目的开发机器上，可使用既有 Conda 环境：
 
 ```bash
 conda run -p /home/miniconda3/envs/zyf1 make \
-  test_minivllm_control_plane mini_vllm_demo test_gpt2_paged_inference
+  test_minivllm_control_plane mini_vllm_demo test_gpt2_paged_inference \
+  test_gpt2_engine mini_vllm_gpt2_demo
 
 conda run -p /home/miniconda3/envs/zyf1 ./test_minivllm_control_plane
 OMP_NUM_THREADS=16 conda run -p /home/miniconda3/envs/zyf1 \
   ./test_gpt2_paged_inference
+OMP_NUM_THREADS=16 conda run -p /home/miniconda3/envs/zyf1 \
+  ./test_gpt2_engine
 ```
 
 ## 正确性验证
@@ -112,20 +122,20 @@ OMP_NUM_THREADS=16 conda run -p /home/miniconda3/envs/zyf1 \
 PagedAttention dense reference max_abs_error=1.45372e-07
 GPT-2 incremental inference max_abs_error=0
 GPT-2 incremental inference max_rel_error=0
+GPT2Engine full-prefix greedy agreement=passed
 ```
 
 ## 下一步开发任务
 
-当前最高优先级任务是实现 `GPT2ModelRunner`，形成端到端 Continuous Batching：
+当前最高优先级任务是建立可信 Benchmark：
 
-1. 定义 `ModelInput`，统一保存 Token、绝对位置、context length、slot mapping 和 Block Table。
-2. 增加独立推理工作区，使增量推理不依赖训练前向分配激活内存。
-3. 将 `SchedulerOutput` 转换为模型输入，支持一个调度轮次同时包含 Decode 和 Chunked Prefill。
-4. 让 BlockManager 的物理 Block ID 直接对应 KV Cache Pool 中的物理页。
-5. 增加 Greedy Sampler，并通过 `Scheduler::commit` 更新请求或释放完成请求的 Block。
-6. 新增端到端测试，验证请求动态加入、提前退出、跨页扩容和回收后复用。
+1. 固定请求到达时间、Prompt 长度、输出长度、Token 和线程数。
+2. 对比完整前缀重算、单请求分页增量推理和 Continuous Batching Engine。
+3. 将 warmup 与正式计时分离，并重复多轮。
+4. 报告 TTFT、TPOT、总吞吐、P50/P95 延迟及 KV Cache Block 使用峰值。
+5. 保存机器、编译参数和原始结果，避免只保留一个无法复现的加速比。
 
-完成该任务后，再依次开发正式 Benchmark、CUDA PagedAttention、Prefix Cache/抢占。
+Benchmark 稳定后，再实现 CUDA PagedAttention，并沿用同一工作负载验证正确性和性能。
 
 ## 学习文档
 
