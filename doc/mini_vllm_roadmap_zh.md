@@ -160,6 +160,7 @@ struct ModelInput {
     std::vector<int> context_lengths;
     std::vector<int> slot_mapping;
     std::vector<int> block_tables;
+    std::vector<int> query_start_locations;
 };
 
 class GPT2ModelRunner {
@@ -176,8 +177,9 @@ public:
 - `slot_mapping`：新 K/V 应写入的物理 Block 和页内偏移。
 - `block_tables`：Attention 读取历史 K/V 时的逻辑到物理映射。
 
-Chunked Prefill 在 ModelRunner 内拆成单 Token 微步，每个微步压紧当前仍有工作的请求。
-这种实现先保证异长 Batch 的映射正确；后续可增加多 Token Prefill 专用执行路径。
+Chunked Prefill 已将同一调度步中的异长请求压成统一 Token Batch；
+`query_start_locations` 标记各请求在 Packed Token 中的起止位置。每个 Token 仍拥有独立
+Position、Context Length、Slot Mapping 和 Block Table，因此可以与 Decode 混合执行。
 
 完整前缀重算、分页增量和 Continuous Batching 三组 CPU Benchmark 已完成。在固定
 4 请求工作负载中，Continuous Batching 吞吐为分页单请求的 1.99 倍；完整前缀重算
@@ -196,8 +198,11 @@ GPU ModelRunner 已完成设备侧端到端 Decode。在与 CPU Benchmark 相同
 Nsight Systems 显示逐 Token 基线中 cuBLAS GEMV/GEMM 类 Kernel 占 GPU Kernel 时间约
 63%，PagedAttention 占 8.7%，LayerNorm 占 8.1%。Packed Multi-Token Prefill 将
 Token Budget 64 的吞吐提升至 1838.148 tok/s，相对逐 Token GPU 基线提升 6.2 倍，
-Profile 中 Kernel Launch 从 17,576 降至 2,176。下一阶段做 FP16/BF16、融合和
-CUDA Graph。
+Profile 中 Kernel Launch 从 17,576 降至 2,176。FP16 权重、激活和分页 KV Cache 已
+贯通，LayerNorm、QK/Softmax 和 Value 归约保留 FP32 累加，PagedAttention 和小算子增加
+`half2` 向量化。在 RTX 3090、Token Budget 64 上达到 2738.953 tok/s，相对同提交 FP32
+的 1866.201 tok/s 提升 46.8%；权重和 KV Cache 显存下降 50%。BF16 路径已实现，但当前
+GPT-2 测试出现 Argmax 分歧，仅作为实验模式。下一阶段做算子融合和 CUDA Graph。
 
 ## 学习 nano-vLLM 的顺序
 

@@ -4,7 +4,7 @@
 LLM 推理引擎。项目使用 C++ 实现推理执行路径，并参考 vLLM 的核心抽象逐步加入
 增量解码、分页 KV Cache、请求调度和连续批处理。
 
-当前版本同时包含 CPU 正确性基线和端到端 FP32 CUDA Decode 路径。Scheduler 产生的
+当前版本同时包含 CPU 正确性基线和 FP32/FP16/BF16 CUDA 路径。Scheduler 产生的
 Token、Position、Context Length、Slot Mapping 与 Block Table 会进入 GPU ModelRunner；
 模型权重、分页 KV Cache、中间激活和 logits 在设备侧持久保存，只把最终 Greedy Token
 传回 CPU。GPU Prefill 会把同一调度轮的 Token 压紧为 `total_tokens` Batch，使用 GEMM
@@ -22,8 +22,9 @@ Token、Position、Context Length、Slot Mapping 与 Block Table 会进入 GPU M
 | 异长动态 Batch | 已完成 | 每个请求拥有独立 context length |
 | Scheduler/ModelRunner 闭环 | 已完成 CPU/CUDA 基线 | 支持混合 Decode、Chunked Prefill、动态请求和页复用 |
 | 可复现 Benchmark | 已完成 CPU/CUDA 基线 | warmup、重复测试、TTFT/TPOT、吞吐和原始结果 |
-| CUDA PagedAttention | 已完成并接入模型 | FP32 Decode，设备侧页表、Slot Mapping 与 KV Cache |
+| CUDA PagedAttention | 已完成并接入模型 | FP32/FP16/BF16，设备侧页表、Slot Mapping 与 KV Cache |
 | Multi-Token Prefill | 已完成第一版 | Packed Token Batch、因果分页 Attention、混合 Prefill/Decode |
+| 混合精度与 Tensor Core | 已完成第一版 | FP16 推荐路径、BF16 实验路径、FP32 归约、half2 向量化 |
 | Prefix Cache 与抢占 | 未开始 | Block 引用计数接口已经预留 |
 
 ## 架构
@@ -126,7 +127,7 @@ make GPU_COMPUTE_CAPABILITY=86 \
   benchmark_cuda_paged_attention benchmark_gpt2_cuda_serving
 CUDA_VISIBLE_DEVICES=0 ./test_cuda_paged_attention
 OMP_NUM_THREADS=16 CUDA_VISIBLE_DEVICES=0 \
-  ./test_gpt2_cuda_model_runner
+  ./test_gpt2_cuda_model_runner --precision fp16
 CUDA_VISIBLE_DEVICES=0 compute-sanitizer --tool memcheck \
   ./test_cuda_paged_attention
 CUDA_VISIBLE_DEVICES=0 compute-sanitizer --tool racecheck \
@@ -154,8 +155,10 @@ GPT2Engine full-prefix greedy agreement=passed
 CUDA PagedAttention max_abs_error=4.47035e-08
 CUDA PagedAttention KV write max_error=0
 Compute Sanitizer memcheck=0 errors, racecheck=0 hazards
-CUDA GPT2ModelRunner max_abs_logit_error=0.00025177
-CUDA GPT2ModelRunner CPU greedy agreement=passed
+CUDA GPT2ModelRunner FP32 max_abs_logit_error=0.000267029
+CUDA GPT2ModelRunner FP16 max_abs_logit_error=0.122009
+CUDA GPT2ModelRunner FP16 CPU greedy agreement=passed
+CUDA GPT2ModelRunner FP16 memcheck=0 errors, racecheck=0 hazards
 ```
 
 ## CPU Benchmark
@@ -205,10 +208,16 @@ FP32、4 个请求同时到达，每个请求输出 4 Token；预热一次后正
 | CPU Continuous Batching | 2074.0 ms | 7.714 tok/s | 1200.8 / 1812.5 ms | 276.3 / 276.3 ms |
 | CUDA 逐 Token Prefill | 54.107 ms | 295.708 tok/s | 30.912 / 47.232 ms | 1.397 / 19.200 ms |
 | CUDA Packed Prefill | 8.704 ms | 1838.148 tok/s | 2.511 / 4.042 ms | 1.541 / 1.789 ms |
+| CUDA FP16 + Tensor Core | 5.842 ms | 2738.953 tok/s | 1.289 / 2.372 ms | 1.127 / 1.274 ms |
 
 Packed Prefill 相对逐 Token CUDA 基线吞吐提升 6.2 倍。16 个生成 Token 与独立 CPU
 完整前缀 Greedy Reference 全部一致。该数字用于本项目版本间回归，不代表 vLLM、
 其他模型、精度或工作负载的通用加速比。
+
+同一任务 06 提交下，FP32 Budget 64 为 1866.201 tok/s，FP16 为 2738.953 tok/s，
+吞吐提升 46.8%，权重与 KV Cache 显存均下降 50%。Nsight Systems 捕获到 Ampere
+`s16816` FP16 Tensor Core Kernel。BF16 已贯通，但测试出现 Argmax 分歧，因此当前仅作
+实验模式，不作为默认性能路径。
 
 Nsight Systems 显示 GPU Kernel 时间主要由 cuBLAS GEMV/GEMM 类 Kernel 占用约 63%，
 PagedAttention 占 8.7%，LayerNorm 占 8.1%；两次被分析运行共启动 17,576 个 Kernel，
@@ -217,16 +226,17 @@ Packed Prefill 将相同 Profile 的 Launch 数降至 2,176，减少 87.6%。
 完整说明见 [开发任务 04：GPU ModelRunner](doc/task_04_gpu_model_runner_zh.md)。
 Packed Prefill 设计与 Token Budget 曲线见
 [开发任务 05：Multi-Token Prefill](doc/task_05_multi_token_prefill_zh.md)。
+混合精度边界、BF16 误差分析和 Tensor Core 证据见
+[开发任务 06：混合精度与 Tensor Core](doc/task_06_mixed_precision_zh.md)。
 
 ## 下一步开发任务
 
-当前最高优先级任务是增加低精度执行：
+当前最高优先级任务是减少低精度路径中的小 Kernel 和 Launch 开销：
 
-1. 增加 FP16/BF16 权重和 KV Cache，使用 Tensor Core。
-2. 分别校验 logits、生成 Token、显存占用和吞吐变化。
-3. 融合 Bias、Residual、LayerNorm 等小 Kernel。
-4. 为固定 Batch Bucket 捕获 CUDA Graph，并与 Eager 路径对照。
-5. 在控制面实现 Prefix Cache、引用计数与抢占。
+1. 融合 Bias、Residual、LayerNorm 和 GELU 等小 Kernel。
+2. 为固定 Token Bucket 捕获 CUDA Graph，并与 Eager 路径对照。
+3. 裁剪非采样 Token 的词表投影，降低 FP32 logits 显存和计算。
+4. 在控制面实现 Prefix Cache、引用计数与抢占。
 
 ## 学习文档
 
@@ -237,6 +247,7 @@ Packed Prefill 设计与 Token Budget 曲线见
 - [开发任务 03：CUDA PagedAttention](doc/task_03_cuda_paged_attention_zh.md)
 - [开发任务 04：GPU ModelRunner](doc/task_04_gpu_model_runner_zh.md)
 - [开发任务 05：Multi-Token Prefill](doc/task_05_multi_token_prefill_zh.md)
+- [开发任务 06：混合精度与 Tensor Core](doc/task_06_mixed_precision_zh.md)
 - [简历项目表述](doc/resume_project.tex)
 
 ## 来源与许可证

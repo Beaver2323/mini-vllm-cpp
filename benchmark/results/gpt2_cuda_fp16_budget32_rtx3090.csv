@@ -1,0 +1,4 @@
+repeat,total_ms,throughput_tokens_per_second,metadata_h2d_bytes
+1,7.365858,2172.184150,2944
+2,7.381002,2167.727363,2944
+3,6.643960,2408.202337,2944

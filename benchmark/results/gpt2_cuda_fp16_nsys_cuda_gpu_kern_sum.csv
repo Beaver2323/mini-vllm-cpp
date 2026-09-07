@@ -1,0 +1,22 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+14.1,1749732,2,874866.0,874866.0,873762,875970,1561.3,"mini_vllm::cuda::<unnamed>::float_to_half_kernel(__half *, const float *, unsigned long)"
+10.2,1266922,120,10557.7,10208.0,8769,12705,1139.2,ampere_fp16_s16816gemm_fp16_64x64_ldg8_f2f_stages_64x5_tn
+9.6,1185541,120,9879.5,9951.5,9088,10944,563.4,"void mini_vllm::cuda::<unnamed>::paged_attention_kernel<__half>(const T1 *, const T1 *, const T1 *, const int *, const int *, T1 *, int, int, int, int, int, int, int)"
+8.9,1101510,120,9179.3,11360.0,5472,12352,2903.1,void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_64x64_32x6_tn_align8>(T1::Params)
+8.2,1020575,250,4082.3,4032.0,3904,4480,126.8,"void mini_vllm::cuda::<unnamed>::layernorm_kernel<__half>(T1 *, const T1 *, const T1 *, const T1 *, int, int)"
+7.0,873479,72,12131.7,12192.0,11776,12513,201.4,ampere_fp16_s16816gemm_fp16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn
+6.5,802973,480,1672.9,1536.0,1440,2784,288.5,"mini_vllm::cuda::<unnamed>::add_bias_half2_kernel(__half *, const __half *, int, int)"
+5.4,674947,10,67494.7,66304.0,64672,74368,3422.0,"mini_vllm::cuda::<unnamed>::argmax_kernel(const float *, int *, int, int, int)"
+3.9,483866,72,6720.4,7392.0,4608,8608,1462.1,"std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __half, __half, __half, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __half>, cublasGemvTensorStridedBatched<const __half>, cublasGemvTensorStridedBatched<__half>, float>>(T13)"
+3.6,444610,48,9262.7,9280.0,4992,13824,4226.9,sm80_xmma_gemm_f16f16_f16f32_f32_tn_n_tilesize32x32x64_stage6_warpsize2x2x1_tensor16x8x16_kernel
+3.4,416512,4,104128.0,104112.0,102528,105760,1829.5,void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm_f16_64x64_32x10_tn_align8>(T1::Params)
+3.0,367744,48,7661.3,7664.5,7392,7968,154.2,void cutlass::Kernel2<cutlass_80_wmma_tensorop_f16_s161616gemm_f16_32x32_128x2_tn_align8>(T1::Params)
+2.8,343487,240,1431.2,1440.0,1248,1824,113.2,"mini_vllm::cuda::<unnamed>::residual_half2_kernel(__half *, const __half *, const __half *, int)"
+2.4,296385,2,148192.5,148192.5,147265,149120,1311.7,ampere_s16816gemm_fp16_64x64_ldg8_stages_64x6_tn
+2.3,281312,2,140656.0,140656.0,137856,143456,3959.8,void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm_f16_256x64_32x4_tn_align2>(T1::Params)
+2.2,267808,120,2231.7,2144.0,1856,2784,226.6,"void mini_vllm::cuda::<unnamed>::write_kv_cache_kernel<__half>(const T1 *, const T1 *, T1 *, T1 *, const int *, const int *, int, int, int, int, int)"
+1.7,214977,120,1791.5,1760.0,1728,1953,71.8,"void mini_vllm::cuda::<unnamed>::split_qkv_kernel<__half>(const T1 *, T1 *, T1 *, T1 *, int, int)"
+1.7,214301,120,1785.8,1760.5,1631,1952,129.8,"void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, __half, __half, float, __half, (bool)1, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T5 *, T5 *, const T6 *, const T6 *, const T7 *, const T4 *, T7 *, void *, long, T6 *, int *)"
+1.5,191583,120,1596.5,1504.0,1440,2016,198.5,"mini_vllm::cuda::<unnamed>::gelu_half2_kernel(__half *, int)"
+1.5,183552,2,91776.0,91776.0,88672,94880,4389.7,"void gemv2T_kernel_val<int, int, __half, float, float, float, (int)128, (int)16, (int)4, (int)4, (bool)0, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __half>, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>, float>>(T13, T6, T6)"
+0.2,24066,10,2406.6,2272.5,2240,3072,298.1,"void mini_vllm::cuda::<unnamed>::embedding_kernel<__half>(T1 *, const int *, const int *, const T1 *, const T1 *, int, int)"
