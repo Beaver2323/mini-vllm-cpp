@@ -1,5 +1,8 @@
 # 任务 09：只为需要采样的行计算 LM Head
 
+前置知识：[生成与 KV](from_pytorch/01_generation_and_kv.md)、[Packed 元数据](from_pytorch/03_pages_and_packed.md)。
+先运行 CPU packed 实验，理解为何只需每个完成输入请求的末行，再看 CUDA Gather。
+
 本任务只改模型末尾的词表投影和 Argmax。先学完任务 05 的 Packed Prefill，再读本篇。
 默认开启 `enable_sample_row_pruning`；`--full-logits` 可以恢复全行投影，便于验证和对照。
 

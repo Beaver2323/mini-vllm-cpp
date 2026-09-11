@@ -1,5 +1,8 @@
 # 开发任务 05：GPU Multi-Token Prefill
 
+前置知识：[分页与 Packed 元数据的完整手算](from_pytorch/03_pages_and_packed.md#7-一组元数据完整手算)。
+先分清请求数 B、输入行数 N、采样行数 R，再读本任务的矩阵化执行。
+
 **状态：已完成 Packed Prefill 基线。**
 
 ## 为什么要做这个任务

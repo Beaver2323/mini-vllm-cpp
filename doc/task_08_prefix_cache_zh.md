@@ -1,5 +1,8 @@
 # 开发任务 08 学习手册：完整 Block Prefix Cache
 
+前置知识：[KV 与分页](from_pytorch/03_pages_and_packed.md)、[缓存引用语义的版本对照](from_pytorch/05_read_nanovllm_and_vllm.md#7-必须知道的实现差异)。
+先弄清同请求 KV 复用，再学习跨请求前缀共享。
+
 任务 09 起调试 logits 只返回采样行；本测试第二请求的映射为 `[1]`，返回一行词表。
 三组性能对照已补在 [任务 10](task_10_prefix_benchmark_zh.md)。
 

@@ -1,5 +1,9 @@
 # 任务 11：双 GPU 的功能性 PD 分离
 
+前置知识：[单请求生成的记账](from_pytorch/01_generation_and_kv.md)、[页地址](from_pytorch/03_pages_and_packed.md)、
+[多卡拆分方式](from_pytorch/05_read_nanovllm_and_vllm.md#9-多卡概念先按拆什么区分)。
+零基础先完成前三节；能手算首 Token 与 KV 的关系后，再进入本篇。
+
 这一版已经在本机两张 RTX 3090 上执行真实 GPT-2 前向：GPU 0 负责 Prefill，GPU 1 负责
 后续 Decode。两端各有完整模型副本和独立 KV Pool，使用 pinned host memory 中转 KV。
 

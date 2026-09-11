@@ -1,6 +1,9 @@
 # Mini-vLLM C++ 源码学习手册
 
-本文是整个项目的学习入口，负责回答“先学什么、去哪里看、从哪里调用、怎样验证”。每个
+**PyTorch 开发者零基础阅读：先完成 [新入门路线](from_pytorch/README.md) 第 1—3 节，再回来按本手册定位实现。**
+入门路线补齐自回归生成、KV 因果性、请求生命周期，提供 PyTorch CPU 实验和 nano-vLLM 对照。
+
+本文是整个项目的源码索引，负责回答“先学什么、去哪里看、从哪里调用、怎样验证”。每个
 专项文档继续解释实现细节。不要一次把所有文件通读；按本文的阶段完成代码跟踪和练习。
 
 ## 1. 先建立全局图
@@ -171,8 +174,8 @@ while (!waiting_.empty() && budget_remains) {
 }
 ```
 
-这让已经在 Decode 的请求优先前进，保护 Inter-Token Latency；剩余 Token Budget 用于准入
-新请求。`count = min(pending_tokens, budget)` 让长 Prompt 被拆成多个 Chunk。
+这让已接纳的请求先于新 Waiting 请求推进；Running 也可能包含未完成的 Prefill，
+因此当前实现并不是严格的 Decode 优先策略。剩余 Token Budget 用于准入新请求。`count = min(pending_tokens, budget)` 让长 Prompt 被拆成多个 Chunk。
 
 ### 手算练习
 
@@ -429,6 +432,8 @@ CUDA_VISIBLE_DEVICES=0 ./test_gpt2_cuda_prefix_cache
 | FP16 + CUDA Graph | 3068.092 tok/s | +15.9% vs FP16 Eager | 降低 CPU Launch 开销 |
 | FP16 + Fusion + Graph | 3189.767 tok/s | +20.5% vs FP16 Eager | Graph 加融合组合 |
 
+这张表汇集各开发阶段的历史实验，部分阶段同时改变了实现与测量环境，不能把每一行都看成
+只改一个变量的因果对照。具体 A/B 以对应任务原始数据为准。
 这些数字只对应固定测试负载，不代表所有 Batch、Prompt 和 GPU。面试时应同时说清硬件、
 精度、请求形状、Warmup 和比较基线。
 
@@ -466,6 +471,9 @@ Nsight Systems 验证设备执行。
 12. GPU Prefix Cache 测试怎样证明复用了真实 KV 数据？
 
 ## 17. 推荐的实际学习节奏
+
+如果此前没接触过推理引擎，先读 [从 PyTorch 出发的第 1—3 节](from_pytorch/README.md)，
+运行小模型缓存与真实控制面 demo，再开始下述源码遍历。
 
 第一遍只读 `Sequence → Scheduler → BlockManager → Engine::step`，运行控制面测试。第二遍加
 `ModelInput → CPU Runner → PagedAttention`，手算一条页表。第三遍进入 CUDA Runner，先跟

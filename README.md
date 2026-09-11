@@ -1,5 +1,8 @@
 # Mini-vLLM C++
 
+**如果你会 PyTorch，但没接触过 vLLM，请从 [零基础中文学习入口](doc/from_pytorch/README.md) 开始。**
+这条路线先用 CPU 小实验讲生成、缓存和调度，再对应本项目源码与 nano-vLLM；不要求先安装 vLLM。
+
 这是一个基于 [llm.c](https://github.com/karpathy/llm.c) GPT-2 实现构建的教学型
 LLM 推理引擎。项目使用 C++ 实现推理执行路径，并参考 vLLM 的核心抽象逐步加入
 增量解码、分页 KV Cache、请求调度和连续批处理。
@@ -266,10 +269,14 @@ Packed Prefill 设计与 Token Budget 曲线见
 
 ## 下一步学习安排
 
-本轮必做的采样行裁剪、Prefix Cache 性能对照与功能性 PD 分离已完成。先按任务 09、10、11
-学习代码并复现测试，暂不继续增加功能。后续优化可从 PD 的 pinned buffer 复用开始单独评估。
+本轮必做的采样行裁剪、Prefix Cache 性能对照与功能性 PD 分离已完成。PyTorch 开发者先完成
+[入门第 1—3 节](doc/from_pytorch/README.md) 的生成、调度、分页实验，再读 CUDA 与任务 09—11。
+先按每节的代码入口和过关题掌握现有实现，后续功能按学习进度单独决定。
 
 ## 学习文档
+
+- **[从 PyTorch 到推理引擎：六节入门教程](doc/from_pytorch/README.md)**
+- [CPU 可运行实验与断点、自测答案](doc/from_pytorch/06_labs_and_answers.md)
 
 - [从 llm.c 到 Mini-vLLM：路线图](doc/mini_vllm_roadmap_zh.md)
 - [分页推理原理与实现讲解](doc/paged_inference_learning_zh.md)

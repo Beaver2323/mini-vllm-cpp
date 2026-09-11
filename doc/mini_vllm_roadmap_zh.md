@@ -1,5 +1,8 @@
 # 从 llm.c 到 Mini-vLLM
 
+学习顺序与开发顺序不同。如果你熟悉 PyTorch 但未接触 vLLM，先看
+[六节中文入门教程](from_pytorch/README.md)，用 CPU 实验建立生成、缓存、调度的认识，再进入下面的模块实现。
+
 ## 项目定位
 
 本项目保留 llm.c 的可读模型与算子实现，参考 nano-vLLM/vLLM 的模块边界，

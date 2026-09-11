@@ -1,0 +1,7 @@
+Breakpoint 1 at 0x5aa0: file mini_vllm/scheduler.hpp, line 89.
+
+Breakpoint 1, mini_vllm::Scheduler::commit (this=0x7fffffffd560, output=..., sampled_token_ids=std::vector of length 2, capacity 2 = {...}) at mini_vllm/scheduler.hpp:89
+89	        if (sampled_token_ids.size() != output.items.size()) {
+$1 = 8
+$2 = 6
+$3 = std::vector of length 2, capacity 2 = {1010, -1}

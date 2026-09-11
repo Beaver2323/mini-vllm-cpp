@@ -1,5 +1,8 @@
 # 开发任务 06：FP16/BF16 混合精度与 Tensor Core
 
+前置知识：[PyTorch 算子、矩阵形状与 cuBLAS 调用对照](from_pytorch/04_pytorch_to_cuda.md)。
+先沿 FP32 前向走通数据流，再比较存储精度、累加精度和低精度分支。
+
 ## 1. 这次解决什么问题
 
 任务 05 已将多个 Prefill Token 压成一个 GEMM Batch，但模型仍使用 FP32 权重、激活和

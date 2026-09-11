@@ -1,5 +1,9 @@
 # 开发任务 04：将 CUDA PagedAttention 接入 GPU ModelRunner
 
+前置知识：[用 PyTorch 经验读 CUDA Runner](from_pytorch/04_pytorch_to_cuda.md)。
+下文的单 Token 微批次与内存数值是任务 04 历史基线。当前 GPU 已使用 Packed Prefill；任务 09
+后 logits 只返回采样行，H2D 还会上传采样行索引。CPU 路径仍保留单 Token 微批次。
+
 **状态：已完成 FP32 端到端基线。**
 
 ## 任务目标

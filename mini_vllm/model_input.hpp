@@ -12,8 +12,8 @@
 
 namespace mini_vllm {
 
-// 一个 ModelInput 表示 ModelRunner 内部的一个单 Token 微批次。
-// Chunked Prefill 会被拆成多个微批次；每个微批次仍可同时包含多个请求。
+// ModelInput 承载 CPU 单 Token 微批次或 CUDA Packed Token Batch 的输入元数据。
+// 两种构造方式分别见 prepare_model_input 与 prepare_packed_model_input。
 struct ModelInput {
     std::vector<int> token_ids;
     std::vector<int> positions;

@@ -1,5 +1,9 @@
 # 开发任务 03：CUDA PagedAttention Decode
 
+前置知识：[分页与 Packed 输入](from_pytorch/03_pages_and_packed.md)。
+下文记录任务 03 当时的独立 FP32 基线；当前 Kernel 已接入 Packed Prefill 和低精度路径，
+写 KV 使用 slot_mapping。请结合任务 05/06 与当前源码阅读。
+
 **状态：已完成独立 FP32 Kernel 基线。**
 
 ## 任务目标

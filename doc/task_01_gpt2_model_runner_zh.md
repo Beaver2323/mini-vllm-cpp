@@ -1,5 +1,8 @@
 # 开发任务 01：接通 Scheduler 与 GPT2ModelRunner
 
+前置知识：[生成与 KV Cache](from_pytorch/01_generation_and_kv.md)、[请求与调度](from_pytorch/02_requests_and_scheduler.md)。
+先手推 demo 的四轮状态，再阅读本任务的 CPU 模型接入。
+
 **状态：已完成。**
 
 ## 为什么这是下一步

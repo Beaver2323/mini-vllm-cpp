@@ -1,0 +1,30 @@
+2026-09-11：zyf1 / Python 3.8.20 / PyTorch 2.4.1+cu121；以下实验实际使用 CPU。
+
+命令：python doc/from_pytorch/examples/attention_and_pages.py all
+
+=== cache ===
+Chunk: 新输入=3，已缓存=3，每层 K 形状=(2, 3, 8)
+Chunk: 新输入=2，已缓存=5，每层 K 形状=(2, 5, 8)
+Chunk: 新输入=4，已缓存=9，每层 K 形状=(2, 9, 8)
+完整前缀 vs 分块缓存: PASS，最大 logits 误差=3.55e-15
+修改未来 Token 不改变过去输出: PASS
+Greedy 输出一致: [13, 13, 9]；前向输入行数 18 → 7
+
+=== pages ===
+页表=[3, 0, 4]，页大小=4，Token 8 → 物理页 4 / 偏移 0 / Slot 16
+连续 KV vs 分页 KV Attention: PASS，未读取页尾无效槽
+
+=== packed ===
+Packed Token=[17, 19, 23, 29]，Position=[5, 0, 1, 2]，Context=[6, 1, 2, 3]
+Slot=[5, 16, 17, 18]，query_start=[0, 1, 4]，sample_rows=[0, 3]
+LM Head 裁剪前后所选行一致: PASS；请求数=2，输入行数=4，采样行数=2
+
+命令：/tmp/zyf_learning_demo（mini_vllm/demo.cpp 的调试构建）
+step=1 batched_tokens=8 free_blocks_before=9 work=[req1:prefillx6, req2:prefillx2]
+       waiting=0 running=2 free_blocks_after=9
+step=2 batched_tokens=8 free_blocks_before=7 work=[req1:decodex1, req2:prefillx7]
+       waiting=0 running=2 free_blocks_after=7
+step=3 batched_tokens=6 free_blocks_before=6 work=[req1:decodex1, req2:prefillx2, req3:prefillx3]
+       waiting=0 running=2 free_blocks_after=8
+step=4 batched_tokens=2 free_blocks_before=8 work=[req2:decodex1, req3:decodex1]
+       waiting=0 running=0 free_blocks_after=12
