@@ -1,5 +1,7 @@
 # 从 PyTorch 开发者到推理引擎开发者：零基础学习入口
 
+需要准备项目面试时，配合 [面试理解与复述路线](../interview/README.md)：先学原理，再用短答、追问与小实验检验。
+
 这条路线专门面向你：会看 PyTorch 的 Module、Tensor、算子、Dispatcher 或编译链路，
 但还没有接触过 vLLM。你不需要先装 vLLM，也不需要先读完 CUDA Kernel。
 

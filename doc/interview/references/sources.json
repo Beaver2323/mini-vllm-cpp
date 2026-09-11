@@ -1,0 +1,102 @@
+{
+  "repository": "https://github.com/vllm-project/vllm",
+  "tag": "v0.10.2",
+  "commit": "01efc7ef781391e744ed08c3292817a773d654e6",
+  "verified_on": "2026-09-11",
+  "commit_resolution": "git ls-remote refs/tags/v0.10.2",
+  "files": [
+    {
+      "path": "LICENSE",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/01efc7ef781391e744ed08c3292817a773d654e6/LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "lines": 201
+    },
+    {
+      "path": "pyproject.toml",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/01efc7ef781391e744ed08c3292817a773d654e6/pyproject.toml",
+      "sha256": "04f70cc6749f870766e4dd2679e1c62aa3dd70764bc6a8ca77d69978ed3e79e0",
+      "lines": 350
+    },
+    {
+      "path": "vllm/v1/engine/llm_engine.py",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/01efc7ef781391e744ed08c3292817a773d654e6/vllm/v1/engine/llm_engine.py",
+      "sha256": "909823763732074b5c421b3658ed96cd1b6659af4c34f81968567d1773670bb5",
+      "lines": 332
+    },
+    {
+      "path": "vllm/v1/engine/core.py",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/01efc7ef781391e744ed08c3292817a773d654e6/vllm/v1/engine/core.py",
+      "sha256": "d1219de0d526b2326a471fe8464b3b8a55730dcab63ea99eb9b15e8b90bb116b",
+      "lines": 1245
+    },
+    {
+      "path": "vllm/v1/core/sched/scheduler.py",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/01efc7ef781391e744ed08c3292817a773d654e6/vllm/v1/core/sched/scheduler.py",
+      "sha256": "2bd28fc32cea71370298bb8da0d9a0bbd163ab315b2c6428540131e3999a255f",
+      "lines": 1287
+    },
+    {
+      "path": "vllm/v1/core/sched/output.py",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/01efc7ef781391e744ed08c3292817a773d654e6/vllm/v1/core/sched/output.py",
+      "sha256": "c0c2a2ecd775836fd3c84b807038524af4661abfd67c616928bb86409d5fbd62",
+      "lines": 162
+    },
+    {
+      "path": "vllm/v1/request.py",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/01efc7ef781391e744ed08c3292817a773d654e6/vllm/v1/request.py",
+      "sha256": "a54996f706806dc255e73a7b4997de3dcc4f01a3503f327f6a2ff6e2a769ed08",
+      "lines": 237
+    },
+    {
+      "path": "vllm/v1/core/kv_cache_manager.py",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/01efc7ef781391e744ed08c3292817a773d654e6/vllm/v1/core/kv_cache_manager.py",
+      "sha256": "2e4c15158d569eefd521700de220cf986ce25ec4e2971846ea2977f4496a7c83",
+      "lines": 398
+    },
+    {
+      "path": "vllm/v1/core/block_pool.py",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/01efc7ef781391e744ed08c3292817a773d654e6/vllm/v1/core/block_pool.py",
+      "sha256": "1122ed808606e1a266995113505417401baa5fa7c42afa372314462c38790876",
+      "lines": 330
+    },
+    {
+      "path": "vllm/v1/core/kv_cache_utils.py",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/01efc7ef781391e744ed08c3292817a773d654e6/vllm/v1/core/kv_cache_utils.py",
+      "sha256": "c69ce881133c859f041d44ccdc8c1de1cc6b16a91f986f7da060d476719a13cf",
+      "lines": 1169
+    },
+    {
+      "path": "vllm/v1/worker/gpu_model_runner.py",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/01efc7ef781391e744ed08c3292817a773d654e6/vllm/v1/worker/gpu_model_runner.py",
+      "sha256": "818c25eb49e9dc1251c630845a25504961257f145851f748ee4b2ea980ed863c",
+      "lines": 3743
+    },
+    {
+      "path": "vllm/v1/worker/gpu_worker.py",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/01efc7ef781391e744ed08c3292817a773d654e6/vllm/v1/worker/gpu_worker.py",
+      "sha256": "8a50c7c633ea5f9e14360029e1551929975a91cdaa750de2be3ae9922bdb1f5f",
+      "lines": 697
+    },
+    {
+      "path": "vllm/v1/worker/block_table.py",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/01efc7ef781391e744ed08c3292817a773d654e6/vllm/v1/worker/block_table.py",
+      "sha256": "c9c63a95779989b3428a7f5295c4631220d245d903706491154e3a52defea1a6",
+      "lines": 221
+    },
+    {
+      "path": "vllm/attention/layer.py",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/01efc7ef781391e744ed08c3292817a773d654e6/vllm/attention/layer.py",
+      "sha256": "d54087a546e9b6f3d23cc779e14eaa048027064d4d20f169446563c82eae1e0b",
+      "lines": 552
+    },
+    {
+      "path": "vllm/model_executor/models/llama.py",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/01efc7ef781391e744ed08c3292817a773d654e6/vllm/model_executor/models/llama.py",
+      "sha256": "b313e288e852d98d96cc01f0898ff49af72c75787a107fa3484ed07fc0914df2",
+      "lines": 671
+    }
+  ],
+  "local_project_commit": "2dfd659",
+  "nano_vllm_commit": "bb823b3e06983d71485a8e1f23715ebd87d98ef8",
+  "validation_scope": "只读固定源码，未安装或执行 vLLM"
+}

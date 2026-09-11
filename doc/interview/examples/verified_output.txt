@@ -1,0 +1,35 @@
+2026-09-11 面试学习材料验证记录
+环境：本项目CPU C++17示例；Python分析使用 /home/miniconda3/envs/zyf1/bin/python。
+
+$ /tmp/zyf_interview_lab_answers all
+L1 PASS: partial=false final=true decode=true computed=5 total=6
+L2 PASS: positions=[15,16,17,32] slots=[95,32,33,144]
+L3 PASS: positions=[17,0,1,2] rows=[0,3] partial_rows=[0] R0=[]
+L4 PASS: handoff=17/18 first_decode=18/19 invalid_prefix=rejected
+
+$ /tmp/zyf_interview_faults
+F1 已检测: position=17 错误slot=17 正确slot=33
+F2 已检测: 错误positions=[0,0,1,2] 正确=[17,0,1,2]
+F3 已检测: 同(N,R)=(4,1) 旧rows=[3] 当前必须=[1]
+F4 已检测: 错误computed/total=18/18 正确=17/18 pending必须为1
+四个教学错误均被定位条件检测；生产引擎未修改。
+
+$ /home/miniconda3/envs/zyf1/bin/python doc/interview/examples/analyze_evidence.py
+采样行 A/B：中位数基于各文件原始 total_ms
+Eager n=7/7 full=8.253907 ms pruned=8.037522 ms reduction=2.622%
+  metadata H2D median: 2944 -> 3008 bytes
+Graph n=7/7 full=5.314496 ms pruned=5.226693 ms reduction=1.652%
+  metadata H2D median: 2944 -> 3008 bytes
+prefix=16 TTFT miss=1.244211 hit=1.118687 ms reduction=10.089% inputs=21->5
+prefix=64 TTFT miss=1.649016 hit=1.306073 ms reduction=20.797% inputs=69->5
+prefix=128 TTFT miss=2.177993 hit=1.316892 ms reduction=39.536% inputs=133->5
+prefix=256 TTFT miss=4.056898 hit=1.540738 ms reduction=62.022% inputs=261->5
+pd.csv single=11.639665 pd=25.905657 ms ratio=2.226x transfer=7.205402 ms payload=5308416 host_bytes=10616832
+pd_graph.csv single=9.876151 pd=18.492698 ms ratio=1.872x transfer=7.018261 ms payload=5308416 host_bytes=10616832
+首对 kernel 交集: 1761 ns = 1.761 us
+已存整次 trace 重叠: 0.294998 ms；20 条配对样本不能替代完整轨迹。
+教学区间: 配对直接相加=8，先合并再求交=5（任意时间单位）
+
+$ /tmp/zyf_interview_starter 1
+实验未通过: TODO 1: sample_ready
+退出码 1：题目尚未补全，符合预期。

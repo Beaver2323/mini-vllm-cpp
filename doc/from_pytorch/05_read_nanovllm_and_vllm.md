@@ -1,5 +1,7 @@
 # 第 5 节：读懂 nano-vLLM 的 Python，再进入 vLLM
 
+深入阅读：[vLLM v0.10.2 固定提交逐函数对照](../interview/01_vllm_source_map_zh.md)，补充本篇导航之外的真实调用点、状态更新时间与面试追问。
+
 上一节：[PyTorch 到 CUDA](04_pytorch_to_cuda.md) · [目录](README.md) · 下一节：[实验与答案](06_labs_and_answers.md)
 
 前四节已经建立请求、计算和缓存的联系。现在用本地 Python 参考实现巩固，再看更完整的 vLLM。

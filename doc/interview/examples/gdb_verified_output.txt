@@ -1,0 +1,30 @@
+2026-09-11 本机GDB实际记录；仅调试CPU学习程序。
+
+参数：['gdb', '-q', '-batch', '-ex', 'set pagination off', '-ex', 'break doc/interview/examples/lab_solutions.hpp:46', '-ex', 'run 4', '-ex', 'print prompt', '-ex', 'print target.num_computed_tokens_', '-ex', 'next', '-ex', 'print target.num_computed_tokens_', '-ex', 'next', '-ex', 'print target.token_ids_', '-ex', 'continue', '/tmp/zyf_interview_lab_answers']
+Breakpoint 1 at 0x8e25: file doc/interview/examples/lab_solutions.hpp, line 46.
+
+Breakpoint 1, interview_lab::restore_after_handoff (target=..., source=...) at doc/interview/examples/lab_solutions.hpp:46
+46	    target.mark_computed(prompt);
+$1 = 17
+$2 = 0
+47	    target.append_token(source.token_ids().back());
+$3 = 17
+48	}
+$4 = std::vector of length 18, capacity 34 = {10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 42}
+L4 PASS: handoff=17/18 first_decode=18/19 invalid_prefix=rejected
+[Inferior 1 (process 188975) exited normally]
+
+参数：['gdb', '-q', '-batch', '-ex', 'set pagination off', '-ex', 'break doc/interview/examples/fault_cases.cpp:28', '-ex', 'run', '-ex', 'print input.positions', '-ex', 'print input.context_lengths', '-ex', 'print input.query_start_locations', '-ex', 'continue', '/tmp/zyf_interview_faults']
+Breakpoint 1 at 0x2a9f: file doc/interview/examples/fault_cases.cpp, line 28.
+
+Breakpoint 1, main () at doc/interview/examples/fault_cases.cpp:28
+28	        const std::vector<int> wrong_positions{0,0,1,2};
+$1 = std::vector of length 4, capacity 4 = {17, 0, 1, 2}
+$2 = std::vector of length 4, capacity 4 = {18, 1, 2, 3}
+$3 = std::vector of length 3, capacity 3 = {0, 1, 4}
+F1 已检测: position=17 错误slot=17 正确slot=33
+F2 已检测: 错误positions=[0,0,1,2] 正确=[17,0,1,2]
+F3 已检测: 同(N,R)=(4,1) 旧rows=[3] 当前必须=[1]
+F4 已检测: 错误computed/total=18/18 正确=17/18 pending必须为1
+四个教学错误均被定位条件检测；生产引擎未修改。
+[Inferior 1 (process 188997) exited normally]
