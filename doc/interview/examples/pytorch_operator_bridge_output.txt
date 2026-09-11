@@ -1,0 +1,9 @@
+QKV PASS: X=(5,8), W=(24,8), projected=(5,24), Q/K/V=(5,2,4)
+GEMM PASS: Y=XW^T 与 Y^T=WX^T；bias 独立广播
+KV PASS: slots=[33,63,112,113,114]；只写目标层和槽，其他元素保持不变
+地址 PASS: slot=33，但 K[page=2,layer=1,head=1,offset=1,d=3] 的元素偏移=711
+Attention PASS: dense mask vs paged 逐行读取；最大误差=1.33e-15
+因果/隔离 PASS: 修改 B 的未来V，A与B较早行不变；错误页表被检测
+LM Head PASS: (5,8)->(5,16) 对照 Gather [0,4]->(2,8)->(2,16)，R=0 输出(0,16)
+采样 PASS: 忽略 padded 词表；相同 Argmax 仍可能有不同 logits
+全部选定实验通过；本程序是 CPU 语义参考，不是 CUDA 精度或性能结论。

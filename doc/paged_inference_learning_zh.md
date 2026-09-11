@@ -1,6 +1,10 @@
 # Mini-vLLM C++ 源码学习手册
 
-面试准备入口：[五篇理解与复述手册](interview/README.md)，按问题组织固定版本对照、口述稿、证据与实验。
+面试准备入口：[理解与复述手册](interview/README.md)，按问题组织固定版本对照、口述稿、证据与实验。
+
+新增详细课程：[完整请求执行过程](interview/06_request_walkthrough_zh.md)、
+[PyTorch/CUDA 逐段对照](interview/07_pytorch_cuda_bridge_zh.md)、
+[从测试反推正确性](interview/08_tests_as_spec_zh.md)，适合把各任务串成一条可手算、可验证的主线。
 
 **PyTorch 开发者零基础阅读：先完成 [新入门路线](from_pytorch/README.md) 第 1—3 节，再回来按本手册定位实现。**
 入门路线补齐自回归生成、KV 因果性、请求生命周期，提供 PyTorch CPU 实验和 nano-vLLM 对照。

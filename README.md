@@ -1,7 +1,11 @@
 # Mini-vLLM C++
 
-**面试准备从 [理解、复述与实操五篇手册](doc/interview/README.md) 开始：**
+**面试准备从 [理解、复述与实操手册](doc/interview/README.md) 开始：**
 固定版本 vLLM 源码对照、项目口述与证据、代码补全、故障定位、性能分析；提供短答、追问和可运行实验。
+
+新增三篇详细代码课程：[完整请求执行过程](doc/interview/06_request_walkthrough_zh.md)、
+[PyTorch/CUDA 逐段对照](doc/interview/07_pytorch_cuda_bridge_zh.md)、
+[从测试反推正确性](doc/interview/08_tests_as_spec_zh.md)，附真实运行记录与分阶段练习。
 
 **如果你会 PyTorch，但没接触过 vLLM，请从 [零基础中文学习入口](doc/from_pytorch/README.md) 开始。**
 这条路线先用 CPU 小实验讲生成、缓存和调度，再对应本项目源码与 nano-vLLM；不要求先安装 vLLM。
@@ -283,7 +287,7 @@ Packed Prefill 设计与 Token Budget 曲线见
 
 ## 学习文档
 
-- **[面试学习路线：五篇手册、回答卡与实操验证](doc/interview/README.md)**
+- **[面试学习路线：基础五篇、详细代码课程与实操验证](doc/interview/README.md)**
 - **[从 PyTorch 到推理引擎：六节入门教程](doc/from_pytorch/README.md)**
 - [CPU 可运行实验与断点、自测答案](doc/from_pytorch/06_labs_and_answers.md)
 

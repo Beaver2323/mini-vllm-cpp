@@ -1,0 +1,8 @@
+基线 PASS: 未修改的控制面测试正常通过
+M1 页号除法误写成取模: 被现有断言检测，returncode=-6
+control_test: <临时目录>/dev/test.cpp:26: void test_block_allocation_release_and_reuse(): Assertion `manager.block_id_for_token(*a, 4) == a->block_table()[1]' failed.
+M2 忽略本轮 Token 预算: 被现有断言检测，returncode=-6
+control_test: <临时目录>/dev/test.cpp:54: void test_chunked_prefill(): Assertion `first.items.size() == 1 && first.items[0].num_scheduled_tokens == 4' failed.
+M3 分配时多记一次引用: 被现有断言检测，returncode=-6
+control_test: <临时目录>/dev/test.cpp:30: void test_block_allocation_release_and_reuse(): Assertion `manager.num_free_blocks() == 5' failed.
+PASS: 三个错误各自编译成功、运行失败；临时副本已清理，项目源码未改动。

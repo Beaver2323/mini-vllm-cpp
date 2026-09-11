@@ -2,6 +2,10 @@
 
 需要准备项目面试时，配合 [面试理解与复述路线](../interview/README.md)：先学原理，再用短答、追问与小实验检验。
 
+完成前三节后，可继续读 [两个请求的完整执行过程](../interview/06_request_walkthrough_zh.md)、
+[PyTorch/CUDA 逐段对照](../interview/07_pytorch_cuda_bridge_zh.md)、
+[从测试反推正确性](../interview/08_tests_as_spec_zh.md)。这三篇用实际代码、运行状态和断言串起整条主线。
+
 这条路线专门面向你：会看 PyTorch 的 Module、Tensor、算子、Dispatcher 或编译链路，
 但还没有接触过 vLLM。你不需要先装 vLLM，也不需要先读完 CUDA Kernel。
 

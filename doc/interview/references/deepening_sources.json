@@ -1,0 +1,465 @@
+{
+  "project_base_commit": "9903541d08343d6908d9b3c5403e676c03716a45",
+  "verified_date": "2026-09-11",
+  "scope": "06—08 本地源码摘录；学习程序为本轮新增。",
+  "sources": {
+    "mini_vllm/sequence.hpp": {
+      "sha256": "526414f9a376be30abff1f342876f6b21d8c25ab33c3b9d0295788490bb42e44",
+      "lines": 88
+    },
+    "mini_vllm/cuda/gpt2_cuda_engine.hpp": {
+      "sha256": "aa7d7e5f353bb1d87fe334d6396a58feba1348fa825080a2de3a61f4a4ac6f43",
+      "lines": 127
+    },
+    "mini_vllm/scheduler.hpp": {
+      "sha256": "cc0892eff445c92ffb22ffd862402e73f1c846798e1fa2cd837e0caa4c77dc23",
+      "lines": 155
+    },
+    "mini_vllm/cuda/gpt2_cuda_model_runner.cu": {
+      "sha256": "2ce7a0f9a7423fbbd2f1e26740941e41320ed04653bb887faa536680e11b7e38",
+      "lines": 1488
+    },
+    "mini_vllm/model_input.hpp": {
+      "sha256": "5e0efa32130742038fec3c4ea936d48f4f296325d82974f51a0d8f2eccfee9dd",
+      "lines": 177
+    },
+    "mini_vllm/block_manager.hpp": {
+      "sha256": "e76aafcb37fb453a6260f6537929d0fdd10a1eeeae68d4a7b749d4eed9d3e25d",
+      "lines": 294
+    },
+    "doc/interview/examples/pytorch_operator_bridge.py": {
+      "sha256": "6b208570f9a285a134fd829cd50bb4552421b2651bef4df34d88fe7954370660",
+      "lines": 179
+    },
+    "mini_vllm/cuda/paged_attention.cu": {
+      "sha256": "0cbda2a963ec5c5ac53a0e3479820aaa0599629e3d0b43c5472cc31723fe9de6",
+      "lines": 346
+    },
+    "dev/test_mini_vllm_control_plane.cpp": {
+      "sha256": "3ee71ba4827857600a99f58bc2303d46c46ae9d7d2333611b4b7e8c9b8bfcec7",
+      "lines": 179
+    },
+    "dev/cuda/test_paged_attention.cu": {
+      "sha256": "ee3f4b49bd74278b781ebddecb54a8356ebccf4cbf809bd38bf14b0283b3e620",
+      "lines": 330
+    },
+    "dev/cuda/test_gpt2_cuda_model_runner.cu": {
+      "sha256": "2c2ff8279b786c04aa3e39ce256af295de7df2a2505fe25f8f4d755cc0a70f84",
+      "lines": 264
+    },
+    "dev/cuda/test_gpt2_cuda_sample_rows.cu": {
+      "sha256": "7f5c7cc40994a45267de29475d729ac0c1f1e915f4369d4756412ef1418531b9",
+      "lines": 63
+    },
+    "dev/cuda/test_gpt2_cuda_prefix_cache.cu": {
+      "sha256": "b7945b7ff37e652745ef3ec42dbe520b5c0bc875b798904e479226f3e9d89118",
+      "lines": 116
+    },
+    "dev/cuda/test_gpt2_pd_engine.cu": {
+      "sha256": "4c20c6652b5a542eb094d9d6e5e5ee6f373bfc64a5f38f6ef58a314a4c4c80b4",
+      "lines": 136
+    },
+    "doc/interview/examples/mutation_demo.py": {
+      "sha256": "ba0ea5a0916b1b203e36294264ff9c93a55bf340548fcf04e565dcca13ef5994",
+      "lines": 60
+    },
+    "doc/interview/examples/mutation_demo_output.txt": {
+      "sha256": "0b79fe33fd69270cbacdea65c59c2150e31b96df0ebe1305cd2e1db51e6375c6",
+      "lines": 8
+    }
+  },
+  "excerpts": [
+    {
+      "document": "06_request_walkthrough_zh.md",
+      "path": "mini_vllm/sequence.hpp",
+      "first": 39,
+      "last": 64,
+      "sha256": "d7bcb3f3607bbd26958697a0a2c92e355d1ddab7052565da133691db72a62693"
+    },
+    {
+      "document": "06_request_walkthrough_zh.md",
+      "path": "mini_vllm/cuda/gpt2_cuda_engine.hpp",
+      "first": 75,
+      "last": 97,
+      "sha256": "0bc22e379df4e036b957de4ddfa0736276fabfb2d550fe1be8c01950ffdd0c72"
+    },
+    {
+      "document": "06_request_walkthrough_zh.md",
+      "path": "mini_vllm/scheduler.hpp",
+      "first": 69,
+      "last": 82,
+      "sha256": "1cad1a04301c9c7cc6be20f2ff05fc897d588e1a43a0150d5351ae62c1a0fed6"
+    },
+    {
+      "document": "06_request_walkthrough_zh.md",
+      "path": "mini_vllm/scheduler.hpp",
+      "first": 131,
+      "last": 143,
+      "sha256": "23709dd65efe37f25e58b6b2e27d51805ef2d9b771c34cd887fa96edd5dd8ea0"
+    },
+    {
+      "document": "06_request_walkthrough_zh.md",
+      "path": "mini_vllm/cuda/gpt2_cuda_model_runner.cu",
+      "first": 756,
+      "last": 775,
+      "sha256": "ff7d8a070df6a60833ee229614ff111fbb79ecf7cf797cfccf00562dc7bf69cf"
+    },
+    {
+      "document": "06_request_walkthrough_zh.md",
+      "path": "mini_vllm/model_input.hpp",
+      "first": 62,
+      "last": 91,
+      "sha256": "88fb34dbe7ebf0ddd0ebf975382697e0c1667977032077cff631d6ec1fe75a31"
+    },
+    {
+      "document": "06_request_walkthrough_zh.md",
+      "path": "mini_vllm/model_input.hpp",
+      "first": 93,
+      "last": 107,
+      "sha256": "22d6d1c6fcfcb130e369163a487a2c6027906ed64a7d18a5cc51cf22cf4eea60"
+    },
+    {
+      "document": "06_request_walkthrough_zh.md",
+      "path": "mini_vllm/cuda/gpt2_cuda_model_runner.cu",
+      "first": 1091,
+      "last": 1106,
+      "sha256": "3c035ab96dcc105dfff80728bbb3d53ac9a8ed0a3386f17e6e7bfdf2c1cae2da"
+    },
+    {
+      "document": "06_request_walkthrough_zh.md",
+      "path": "mini_vllm/cuda/gpt2_cuda_model_runner.cu",
+      "first": 1166,
+      "last": 1188,
+      "sha256": "8c159101fb0b0918b0db084ec8f7645d799571f93d0a2cf1ac99f79f4b789cfd"
+    },
+    {
+      "document": "06_request_walkthrough_zh.md",
+      "path": "mini_vllm/cuda/gpt2_cuda_model_runner.cu",
+      "first": 1342,
+      "last": 1352,
+      "sha256": "8c3f504f4952322c5bcdc98bac01f7542f59151597ecd1ba6146419d7cf076e4"
+    },
+    {
+      "document": "06_request_walkthrough_zh.md",
+      "path": "mini_vllm/cuda/gpt2_cuda_model_runner.cu",
+      "first": 782,
+      "last": 797,
+      "sha256": "47e671a95d03d13ce3c7a35c19a2bacff04063a53c68e2616b7f2cf97fc2c05d"
+    },
+    {
+      "document": "06_request_walkthrough_zh.md",
+      "path": "mini_vllm/scheduler.hpp",
+      "first": 93,
+      "last": 113,
+      "sha256": "67c01d791f576500bb8a9d13804287bd4530c128e27801145108f4b9200b1b94"
+    },
+    {
+      "document": "06_request_walkthrough_zh.md",
+      "path": "mini_vllm/block_manager.hpp",
+      "first": 189,
+      "last": 201,
+      "sha256": "9ae5f9da96f145133a0e8ebfc0bececcd3ddd331ddd811f725c8a27df45db91e"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "doc/interview/examples/pytorch_operator_bridge.py",
+      "first": 16,
+      "last": 25,
+      "sha256": "203e25758c6f84d2aa827c40a39637ec19096f80f2418a78a93349a2c2f6cbca"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "mini_vllm/cuda/gpt2_cuda_model_runner.cu",
+      "first": 322,
+      "last": 335,
+      "sha256": "3d53f353ab9c763730721e1a25538eb79da7f5a5842d4f9d11c5f086f1172a9a"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "mini_vllm/cuda/gpt2_cuda_model_runner.cu",
+      "first": 1166,
+      "last": 1177,
+      "sha256": "d6d2bd08371db2e405dc1ebcdca037fcad70cd02a0abf7b2490c116ad9142c4d"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "mini_vllm/cuda/gpt2_cuda_model_runner.cu",
+      "first": 990,
+      "last": 1008,
+      "sha256": "fb131d5000ee7e9aa29f28ea84261676028561dbf197c25862e21a13097a9a78"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "doc/interview/examples/pytorch_operator_bridge.py",
+      "first": 82,
+      "last": 86,
+      "sha256": "757182960a150d014f548915ee97915a2e54957ea3f9bcd4e2ab684c17b9837d"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "doc/interview/examples/pytorch_operator_bridge.py",
+      "first": 87,
+      "last": 92,
+      "sha256": "bf6ed6e7649a36c854f945f43f7761e0216d7c96afc2c66e81865028b9ea4a39"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "mini_vllm/cuda/paged_attention.cu",
+      "first": 17,
+      "last": 25,
+      "sha256": "dfe0c930b0935cfc1f4e6135f01712a15b6c7217fa9cbcd735a1ee6d328cd112"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "doc/interview/examples/pytorch_operator_bridge.py",
+      "first": 41,
+      "last": 45,
+      "sha256": "d0de8fa21dcbf0646a6e8a775130abe928193defad4b1f09f0603a9b77dd88cd"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "mini_vllm/cuda/paged_attention.cu",
+      "first": 64,
+      "last": 74,
+      "sha256": "5350204523b7c6f71964d8a4b7d09cab845a7a3dd63f12411400b5d4127dde47"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "mini_vllm/cuda/paged_attention.cu",
+      "first": 96,
+      "last": 103,
+      "sha256": "cc6b85fe54510ae55289f606b03524e58c204b086a7bb5b29076432373ceed29"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "doc/interview/examples/pytorch_operator_bridge.py",
+      "first": 48,
+      "last": 52,
+      "sha256": "0a6d0eb7902b0d09dccc1d25ed500dff5b032eb60570f042069f2513004810c9"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "doc/interview/examples/pytorch_operator_bridge.py",
+      "first": 55,
+      "last": 61,
+      "sha256": "68d4dce03b1a5c6432fa03fb5e0cadee942cdaaa776c6ed3bb998ad95ba661f4"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "doc/interview/examples/pytorch_operator_bridge.py",
+      "first": 64,
+      "last": 77,
+      "sha256": "98776fbcd559f998bfd2c92203afe55541cd42c52c257960d0f5a93889a657f9"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "mini_vllm/cuda/paged_attention.cu",
+      "first": 125,
+      "last": 138,
+      "sha256": "edcbf3e953d8e27b37b41cccecb6aa91d22465aaa8884832ed0357cba9976c2f"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "mini_vllm/cuda/paged_attention.cu",
+      "first": 185,
+      "last": 206,
+      "sha256": "3eb8ffecaf1bedfafba8b4195ae550488152dbbe6e9d19b210184386980d9b05"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "mini_vllm/cuda/paged_attention.cu",
+      "first": 238,
+      "last": 253,
+      "sha256": "1314d6203bbb47fcd61a891b4c4a312591067b238b0e3b8eff27962ef8c2f366"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "mini_vllm/cuda/paged_attention.cu",
+      "first": 278,
+      "last": 291,
+      "sha256": "1f78cd48b063775c170e2532fb2a9b92abed9026c550224fecc5f9d902e6a5b9"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "doc/interview/examples/pytorch_operator_bridge.py",
+      "first": 124,
+      "last": 136,
+      "sha256": "dd500612b49c086fb43895d280aa2ba4c2e08f971ae610d0c7c268567a425ee1"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "doc/interview/examples/pytorch_operator_bridge.py",
+      "first": 144,
+      "last": 149,
+      "sha256": "37fac4d1f6537320e8d929206dfda2ac7d9b8e59143d0c26801bb1c1228eb1d7"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "mini_vllm/cuda/gpt2_cuda_model_runner.cu",
+      "first": 638,
+      "last": 647,
+      "sha256": "124d8efd07e0bb700d8acf404d93f78f911c0ed5f344e203dac1d1596ddf222c"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "mini_vllm/cuda/gpt2_cuda_model_runner.cu",
+      "first": 1302,
+      "last": 1317,
+      "sha256": "db9ba26ab3eeac857de7060d8524e8f0ca000bc4b8aa5ea0ea5236f62779a44d"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "mini_vllm/cuda/gpt2_cuda_model_runner.cu",
+      "first": 1039,
+      "last": 1048,
+      "sha256": "858b1c3053dccd895179eed964d7a85086fa05faedc82eb0db86f1c9ac5ed5c9"
+    },
+    {
+      "document": "07_pytorch_cuda_bridge_zh.md",
+      "path": "mini_vllm/cuda/gpt2_cuda_model_runner.cu",
+      "first": 607,
+      "last": 617,
+      "sha256": "8a0ba37ba2b7e335dd702ab9cccbc24d32f6f7a8520c9e2730a40cf42bcfd03f"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/test_mini_vllm_control_plane.cpp",
+      "first": 19,
+      "last": 30,
+      "sha256": "3056ceba817d9bfb54fcdb49d621565d36d7bb522c16efbc1e9034d64da2a66a"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/test_mini_vllm_control_plane.cpp",
+      "first": 32,
+      "last": 44,
+      "sha256": "0af89884189945335484c22f266b50d5d196e28963b525f3ed4699a21faa7123"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/test_mini_vllm_control_plane.cpp",
+      "first": 47,
+      "last": 67,
+      "sha256": "d9dfcefb3e6730473753e04446d3d1e55af2f0498721d93bd8ee7106cba2675c"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/test_mini_vllm_control_plane.cpp",
+      "first": 70,
+      "last": 87,
+      "sha256": "f8caabcd04c51abfb994073c5baaea664375f801e0767e44e4c1f45e5e2ae397"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/test_mini_vllm_control_plane.cpp",
+      "first": 90,
+      "last": 117,
+      "sha256": "abaeaf1d456d714071dd09836d7f09e8db099faf3cd76366d205948ecfea0d7b"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/test_mini_vllm_control_plane.cpp",
+      "first": 139,
+      "last": 149,
+      "sha256": "d8b5ad139984045afb581c6ca3aa6456dd158a8df8eb6c3d718b34fe9b07e72d"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/cuda/test_paged_attention.cu",
+      "first": 132,
+      "last": 151,
+      "sha256": "b2e9603b92f720ff9bddb412ddb9e0b0ff1f61482743484fccb117e4f3c14762"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/cuda/test_paged_attention.cu",
+      "first": 224,
+      "last": 235,
+      "sha256": "ea2f5423ee131c48259ac11003b5a781f47896c99fbc3c3a919a902e74a3db23"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/cuda/test_paged_attention.cu",
+      "first": 314,
+      "last": 324,
+      "sha256": "862b91653ac928b90153dd875c904bb573b1d894c9e354eb8067aca420fc6fb7"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/cuda/test_gpt2_cuda_model_runner.cu",
+      "first": 72,
+      "last": 98,
+      "sha256": "945a8ec5bb37f1958f33b38bf98f200caa6f4dc7e066ece3112ca1817b11484f"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/cuda/test_gpt2_cuda_model_runner.cu",
+      "first": 230,
+      "last": 240,
+      "sha256": "8929262986c4e16c1ecfd14e96b1e13797aabe90bdf2632324fc41cb0700974a"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/cuda/test_gpt2_cuda_sample_rows.cu",
+      "first": 18,
+      "last": 24,
+      "sha256": "bf5c23bb8e79525ba79f552027e168c9869bf8d2d9cc7a1c84ca9527616b56f8"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/cuda/test_gpt2_cuda_sample_rows.cu",
+      "first": 41,
+      "last": 58,
+      "sha256": "9cb9c6eeb47c7d151c7910985f948065ad5caf5e89b7c756ffbc93443d452387"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/cuda/test_gpt2_cuda_prefix_cache.cu",
+      "first": 78,
+      "last": 86,
+      "sha256": "46f135c65d58c99ea5fddb4df6be27c74aa860a47778cd84c0b5a0b2b7150f64"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/cuda/test_gpt2_cuda_prefix_cache.cu",
+      "first": 88,
+      "last": 104,
+      "sha256": "015f3499160e920f14d46116757eae6ac5fbb833a72d9ff3a4ca7ba5fc92cbe4"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/cuda/test_gpt2_pd_engine.cu",
+      "first": 33,
+      "last": 45,
+      "sha256": "28161cc021f97a8c3a6156af5a8e1f4def3279bad015134dc01d8cb102f306ee"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/cuda/test_gpt2_pd_engine.cu",
+      "first": 46,
+      "last": 57,
+      "sha256": "5babd097221568e585311e73695512677ed2758ee54cda032ba26e72de52ebfd"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "dev/cuda/test_gpt2_pd_engine.cu",
+      "first": 86,
+      "last": 110,
+      "sha256": "c1e5ebfe694e3d7a1cf1ccd76989ce9aa99d009d8b75f1b6a722cb5bcfa1b45a"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "doc/interview/examples/mutation_demo.py",
+      "first": 9,
+      "last": 19,
+      "sha256": "9fe6f5c69778f2494b4298d20a7e8279e252a79ad50a223b809668c1c204e211"
+    },
+    {
+      "document": "08_tests_as_spec_zh.md",
+      "path": "doc/interview/examples/mutation_demo_output.txt",
+      "first": 1,
+      "last": 8,
+      "sha256": "6f7f8f150cfc9fc44ed43753ae240bc728d2386c1d6d1750038f9d02598f43bd"
+    }
+  ]
+}
