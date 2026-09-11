@@ -1,5 +1,341 @@
 # 开发任务 08 学习手册：完整 Block Prefix Cache
 
+Prefix Cache 的核心不是多一个 map，而是让多个请求共享已经计算好的 KV，同时保证后续写入不会破坏共享数据。本篇用一条完整生命周期解释引用计数、命中、释放和淘汰。
+
+学习目标：在纸上跟踪每个物理页由谁持有，并说明一个新请求为什么能够跳过已命中的 Prompt 计算。
+
+## 1. 与 PyTorch past_key_values 的区别
+
+普通单请求缓存让**同一请求**不重复计算历史。Prefix Cache 进一步让**不同请求**复用相同前缀的 KV。
+
+相同文本经过分词后不一定有相同 ID 序列，反过来仅末尾一段 ID 相同也不代表历史 hidden 相同。这里缓存键直接建立在 Token 前缀上，模型权重和推理配置在 Engine 内保持一致。
+
+当前实现是单 Engine 的内存缓存，不持久化、不跨模型共享，也没有多租户 salt 或 LoRA 身份管理。学习时先证明这个范围内正确，再考虑额外身份字段。
+
+## 2. 源码阅读地图与调用点
+
+| 位置 | 在生命周期中做什么 |
+| --- | --- |
+| [try_schedule](../mini_vllm/scheduler.hpp#L123) | 新请求先尝试命中 |
+| [apply_prefix_cache](../mini_vllm/block_manager.hpp#L101) | 共享页，增加 computed |
+| [cache_computed_prefix_blocks](../mini_vllm/block_manager.hpp#L133) | 前向完成后把可缓存页登记 |
+| [release](../mini_vllm/block_manager.hpp#L174) | 请求归还自己的引用 |
+| [evict_one_cached_block](../mini_vllm/block_manager.hpp#L262) | 回收只有缓存持有的冷页 |
+| [clear_prefix_cache](../mini_vllm/block_manager.hpp#L161) | 清除缓存拥有的引用 |
+| [GPU 验证](../dev/cuda/test_gpt2_cuda_prefix_cache.cu) | 共享后数值、尾页与回收是否正确 |
+
+```text
+新请求 Waiting
+  → apply_prefix_cache：已有 KV 的页直接挂到请求表
+  → ensure_capacity：为剩余输入申请可写页
+  → Runner：只执行 computed 之后的 Token
+  → commit：更新 computed → 登记完整前缀页
+  → 请求完成：release 请求引用
+  → 缓存仍可保留，等命中或 LRU 淘汰
+```
+
+## 3. 为什么 key 包含完整历史
+
+源码：[mini_vllm/block_manager.hpp，第 250—260 行](../mini_vllm/block_manager.hpp#L250)。以下为当前文件的原样摘录。
+
+```cpp
+    std::vector<int> prefix_key(
+        const Sequence& sequence, std::size_t logical_block) const {
+        const std::size_t end = (logical_block + 1) * block_size_;
+        if (end > sequence.num_prompt_tokens()) {
+            throw std::out_of_range("prefix block exceeds prompt");
+        }
+        return std::vector<int>(
+            sequence.token_ids().begin(),
+            sequence.token_ids().begin() +
+                static_cast<std::ptrdiff_t>(end));
+    }
+```
+
+对逻辑块 b，key 是 `tokens[0:(b+1)*block_size]`。第二块的 key 不只包含第二块自己的 Token，还包含第一块。
+
+手算反例，教学页大小 4：
+
+```text
+请求 A：[1,2,3,4] [9,9,9,9] [100]
+请求 B：[5,6,7,8] [9,9,9,9] [100]
+```
+
+第二块的 Token 字面相同，但在多层 causal Transformer 中，它们的 hidden 已依赖不同历史，不能共享第二块 KV。完整前缀 key 会把两个请求区分开。
+
+这份实现使用 `map<vector<int>,...>`，容易检查且没有 hash 碰撞歧义，但构造长前缀 key 和比较 vector 有成本。不能把它表述成已经实现了高效的链式哈希缓存。
+
+## 4. 为什么始终留至少一个 Prompt Token 重算
+
+源码：[mini_vllm/block_manager.hpp，第 101—113 行](../mini_vllm/block_manager.hpp#L101)。以下为当前文件的原样摘录。
+
+```cpp
+    std::size_t apply_prefix_cache(Sequence& sequence) {
+        if (!prefix_cache_enabled_ || sequence.num_computed_tokens() != 0 ||
+            !sequence.block_table().empty()) {
+            return 0;
+        }
+        const std::size_t cacheable_blocks =
+            (sequence.num_prompt_tokens() - 1) / block_size_;
+        std::size_t hits = 0;
+        for (std::size_t logical_block = 0;
+             logical_block < cacheable_blocks; ++logical_block) {
+            const std::vector<int> key = prefix_key(sequence, logical_block);
+            auto cached = prefix_cache_.find(key);
+            if (cached == prefix_cache_.end()) break;
+```
+
+可缓存块数是 `(prompt_tokens−1)/block_size`。减 1 的原因：当前缓存只有 KV，没有保存可直接用于这次生成的最终 logits，Runner 需要至少一行输入产生首 Token。
+
+用真实页大小 16：
+
+| Prompt 长度 | 可命中完整块数上限 | 即使全命中仍需计算 |
+| ---: | ---: | ---: |
+| 16 | 0 | 16 个 Token |
+| 17 | 1 | 1 个 Token |
+| 32 | 1 | 16 个 Token |
+| 33 | 2 | 1 个 Token |
+
+Prompt 长度正好对齐页大小时，会留下整块作为本请求私有部分。这个策略保守但简单，不需要缓存末行 hidden/logits，也不需要处理共享尾页继续写入的 copy-on-write。
+
+“没有复用所有可能的 Token”是当前设计选择，不是整数除法错误。任务 10 构造 seed 为 `prefix+1`，就是为了让 prefix 个 Token 全部满足可缓存条件。
+
+## 5. 命中时只改元数据，不复制 K/V
+
+源码：[mini_vllm/block_manager.hpp，第 114—130 行](../mini_vllm/block_manager.hpp#L114)。以下为当前文件的原样摘录。
+
+```cpp
+            Block& block = blocks_.at(
+                static_cast<std::size_t>(cached->second.block_id));
+            if (block.ref_count == 0) {
+                throw std::logic_error("prefix cache references a free block");
+            }
+            ++block.ref_count;
+            cached->second.last_used = ++cache_clock_;
+            sequence.block_table().push_back(block.id);
+            ++hits;
+        }
+        if (hits == 0) return 0;
+        if (!live_sequences_.insert(sequence.request_id()).second) {
+            throw std::logic_error("cached sequence allocation is inconsistent");
+        }
+        sequence.mark_computed(hits * block_size_);
+        prefix_cache_hit_blocks_ += hits;
+        return hits;
+```
+
+命中后发生三件关键事情：
+
+1. 物理页引用计数加 1，表示新请求也在使用。
+2. 页号加入新请求的 `block_table`，该请求读历史时会指向同一物理位置。
+3. `mark_computed(hits*block_size)` 跳过已经存在 KV 的输入位置。
+
+没有调用 memcpy，因为两个请求在同一个 KV Pool 中共享同一个页。省掉的不只是复制，更是整段 Prompt 在所有模型层上的重复计算。
+
+但元数据命中本身不能证明 KV 有效。缓存登记必须发生在模型已完成这些位置计算之后，不能在刚分配页时就登记。
+
+## 6. 登记缓存发生在 commit，缓存自己也持有引用
+
+源码：[mini_vllm/block_manager.hpp，第 133—158 行](../mini_vllm/block_manager.hpp#L133)。以下为当前文件的原样摘录。
+
+```cpp
+    void cache_computed_prefix_blocks(const Sequence& sequence) {
+        if (!prefix_cache_enabled_) return;
+        const std::size_t prompt_cacheable =
+            (sequence.num_prompt_tokens() - 1) / block_size_;
+        const std::size_t computed_blocks =
+            sequence.num_computed_tokens() / block_size_;
+        const std::size_t count = std::min(
+            {prompt_cacheable, computed_blocks,
+             sequence.block_table().size()});
+        for (std::size_t logical_block = 0;
+             logical_block < count; ++logical_block) {
+            const std::vector<int> key = prefix_key(sequence, logical_block);
+            auto cached = prefix_cache_.find(key);
+            if (cached != prefix_cache_.end()) {
+                cached->second.last_used = ++cache_clock_;
+                continue;
+            }
+            const int block_id = sequence.block_table()[logical_block];
+            Block& block = blocks_.at(static_cast<std::size_t>(block_id));
+            if (block.ref_count == 0) {
+                throw std::logic_error("cannot cache an unreferenced block");
+            }
+            ++block.ref_count; // Prefix Cache 自身持有一个引用。
+            prefix_cache_.emplace(
+                std::move(key), CacheEntry{block_id, ++cache_clock_});
+        }
+```
+
+`count` 取三个上界的最小值：Prompt 允许缓存的完整块、实际已计算完整块、已分配页表长度。只分配未计算的页，不能通过 `computed_blocks` 这一关。
+
+如果 key 已存在，只更新访问时间，不再额外增加缓存引用；否则同一个请求每次 commit 都重复加引用，会产生无法回收的泄漏。
+
+本项目的引用规则是：
+
+```text
+ref_count = 活跃请求对该页的引用数量 +（缓存登记是否持有 1 个引用）
+```
+
+所以空闲页 ref=0；只有缓存持有的页 ref=1；缓存加一个请求通常 ref=2。阅读 nano-vllm 或其他系统时，不要直接套用这些具体数字，不同实现的空闲队列与缓存引用约定可能不同。
+
+## 7. 两个请求共享前缀的完整状态表
+
+教学配置：4 个物理页、页大小 16、Prompt 长度 17、输出 1 个。A 与 B 前 16 个 Token 相同，最后一个 Token 可以不同。
+
+假设 A 先分配页 `[0,1]`，算完 Prompt 后只登记页 0。A 结束时按逆序释放，页 1 回到空闲队列，页 0 留给缓存：
+
+| 时刻 | 页 0 引用组成 | 页 0 ref | 空闲页数 | 缓存页数 |
+| --- | --- | ---: | ---: | ---: |
+| 初始 | 无 | 0 | 4 | 0 |
+| A 分配两页 | A | 1 | 2 | 0 |
+| A 计算完成并登记页 0 | A + cache | 2 | 2 | 1 |
+| A 完成并释放 | cache | 1 | 3 | 1 |
+| B 命中页 0 | cache + B | 2 | 3 | 1 |
+| B 分配一个私有尾页 | cache + B | 2 | 2 | 1 |
+| B 完成并释放 | cache | 1 | 3 | 1 |
+| clear cache | 无 | 0 | 4 | 0 |
+
+B 在命中后 `computed=16`，只需要处理自己的最后一个 Prompt Token。它写私有尾页，绝不会覆盖共享页 0 中的前 16 个位置。
+
+若 A 尚未结束，B 已经命中同一页，页 0 ref 可以是 3：A、B、cache 各一个。它不能被 LRU 淘汰。
+
+## 8. release 与 clear 的区别
+
+源码：[mini_vllm/block_manager.hpp，第 189—201 行](../mini_vllm/block_manager.hpp#L189)。以下为当前文件的原样摘录。
+
+```cpp
+        for (auto it = sequence.block_table().rbegin();
+             it != sequence.block_table().rend(); ++it) {
+            Block& block = blocks_.at(static_cast<std::size_t>(*it));
+            if (block.ref_count == 0) {
+                throw std::logic_error("block reference count underflow");
+            }
+            --block.ref_count;
+            if (block.ref_count == 0) {
+                free_block_ids_.push_back(block.id);
+            }
+        }
+        sequence.block_table().clear();
+    }
+```
+
+源码：[mini_vllm/block_manager.hpp，第 161—172 行](../mini_vllm/block_manager.hpp#L161)。以下为当前文件的原样摘录。
+
+```cpp
+    void clear_prefix_cache() {
+        for (const auto& item : prefix_cache_) {
+            Block& block = blocks_.at(
+                static_cast<std::size_t>(item.second.block_id));
+            if (block.ref_count == 0) {
+                throw std::logic_error("prefix cache reference underflow");
+            }
+            --block.ref_count;
+            if (block.ref_count == 0) free_block_ids_.push_back(block.id);
+        }
+        prefix_cache_.clear();
+    }
+```
+
+`release(sequence)` 归还一个请求拥有的引用，并清空该请求页表；`clear_prefix_cache()` 只归还缓存引用，不清空活跃请求页表。
+
+因此执行 clear 时如果仍有请求使用某缓存页，该页 ref 从 2 降为 1，仍不能进入 free list。直到请求 release 后才归零。
+
+反过来，所有请求完成后 `free<num_blocks` 不一定是泄漏，可能是缓存有意保留。验证时要区分“请求已结束”和“连缓存也已清空”。
+
+`prefix_cache_hit_blocks` 是累计计数，clear 不重置它。测量一次目标请求命中多少块，要用前后差值，任务 10 的 Benchmark 正是这样做。
+
+## 9. LRU 只选 cache-only 页
+
+源码：[mini_vllm/block_manager.hpp，第 262—279 行](../mini_vllm/block_manager.hpp#L262)。以下为当前文件的原样摘录。
+
+```cpp
+    bool evict_one_cached_block() {
+        auto victim = prefix_cache_.end();
+        for (auto it = prefix_cache_.begin(); it != prefix_cache_.end(); ++it) {
+            const Block& block = blocks_.at(
+                static_cast<std::size_t>(it->second.block_id));
+            if (block.ref_count == 1 &&
+                (victim == prefix_cache_.end() ||
+                 it->second.last_used < victim->second.last_used)) {
+                victim = it;
+            }
+        }
+        if (victim == prefix_cache_.end()) return false;
+        Block& block = blocks_.at(
+            static_cast<std::size_t>(victim->second.block_id));
+        --block.ref_count;
+        free_block_ids_.push_back(block.id);
+        prefix_cache_.erase(victim);
+        return true;
+```
+
+`ref_count==1` 在遍历缓存条目的前提下意味着只有缓存持有。满足条件后才比较 `last_used`，选择最久未使用的候选。
+
+这里 `last_used` 是单调递增访问计数，不是系统时间。它足以表达相对新旧，不需要为每次 cache hit 读取墙钟。
+
+LRU 不会把正在运行请求的页抢走。本实现没有请求级抢占、换出或自动重算，因此“池满了”可能仍然无法继续，不能把缓存淘汰说成完整的 OOM 恢复机制。
+
+## 10. 分配失败的副作用要讲准确
+
+源码：[mini_vllm/block_manager.hpp，第 69—79 行](../mini_vllm/block_manager.hpp#L69)。以下为当前文件的原样摘录。
+
+```cpp
+    bool ensure_capacity(Sequence& sequence, std::size_t token_count) {
+        const std::size_t required = blocks_needed(token_count);
+        if (required <= sequence.block_table().size()) {
+            return true;
+        }
+        const std::size_t additional = required - sequence.block_table().size();
+        while (additional > free_block_ids_.size() &&
+               evict_one_cached_block()) {}
+        if (additional > free_block_ids_.size()) {
+            return false;
+        }
+```
+
+代码先尝试淘汰缓存，再检查剩余空闲页是否足够。成功检查后才把新页逐个挂到请求表，因此容量不足时不会只分给这个请求一半所需的新页。
+
+但失败不代表全局状态完全没变化：之前的循环可能已经淘汰一些 cache-only 页，只是仍不够满足本次申请。缓存内容与空闲队列可能已改变。
+
+这一区别对写测试很重要。可以要求“请求没有部分新增页”，不能未经源码证明就要求“失败后所有缓存条目原样保留”。
+
+页号合法、ref 与 free list 一致也不是全部正确性；还要证明缓存身份正确、数值已计算、共享范围不被写入。结构检查与数值测试需要配合。
+
+## 11. 调试位置、练习与答案
+
+建议按顺序在 `apply_prefix_cache`、`cache_computed_prefix_blocks`、`release`、`evict_one_cached_block` 停下，观察同一个页号的拥有者变化。不要只打印 ref 数字而不记录对应请求。
+
+用 [GPU Prefix Cache 测试](../dev/cuda/test_gpt2_cuda_prefix_cache.cu) 核对：相同前缀命中、不同历史不能误命中、尾页可写隔离、活跃引用保留，以及输出与独立前向一致。
+
+**题 1：Prompt 48 个 Token，最多可复用几页？**
+
+答案：`(48−1)/16=2` 页，剩下 16 个 Token 重算。不能把全部 3 页都挂上后让 Runner 接收空输入。
+
+**题 2：一页 cache + A + B，A 结束后 ref 是多少？**
+
+答案：2；B 与缓存还各持有一个。此时不能淘汰。
+
+**题 3：调用 clear 后有活跃请求引用的页会立即 free 吗？**
+
+答案：不会。clear 只删缓存引用，活跃请求仍保证页的生命周期。
+
+**题 4：相同第 2 块 Token，不同第 1 块，可以共享第 2 块吗？**
+
+答案：当前多层 causal 模型一般不可以；第二块 KV 的上下文依赖不同。完整前缀 key 防止这种误复用。
+
+**题 5：ensure_capacity 返回 false，可否断言缓存一条都没被删？**
+
+答案：不可以。可能已经淘汰 cache-only 页，但总量仍不足；请求没有部分新增页与全局没有副作用是不同保证。
+
+下一篇：[任务 09：只计算真正用于采样的 logits 行](task_09_sample_rows_zh.md)。
+
+---
+
+## 原开发记录与阶段实验
+
+以下保留本任务开发时的目标、验收与测量记录。涉及后续任务改动的行为，以前面的当前源码精读为准；旧性能数据只代表记录中的配置。
+
 前置知识：[KV 与分页](from_pytorch/03_pages_and_packed.md)、[缓存引用语义的版本对照](from_pytorch/05_read_nanovllm_and_vllm.md#7-必须知道的实现差异)。
 先弄清同请求 KV 复用，再学习跨请求前缀共享。
 

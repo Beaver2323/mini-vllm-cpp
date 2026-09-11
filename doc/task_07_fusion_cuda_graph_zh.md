@@ -1,5 +1,324 @@
 # 开发任务 07 学习手册：Residual + LayerNorm 融合与 CUDA Graph
 
+这一篇有两个独立主题：Residual + LayerNorm 融合改变算子边界，CUDA Graph 改变主机提交方式。先分别读懂，再做四组对照，才能知道收益来自哪里。
+
+学习目标：从源码解释融合保留了哪些值、Graph 捕获了什么，以及为什么同一个 N 可能需要多张图。文末已有阶段实验，这里补上完整的推导过程。
+
+## 1. 先建立四种执行模式
+
+| 融合 | Graph | 与基线相比改变了什么 |
+| --- | --- | --- |
+| 关 | 关 | 普通 kernel/GEMM 逐次提交 |
+| 开 | 关 | 减少残差与归一化之间的独立 launch |
+| 关 | 开 | 模型算子结构相同，用图重放提交 |
+| 开 | 开 | 同时使用两项改变 |
+
+Graph 不会自动帮你把两个 C++ CUDA kernel 合并成一个。融合也不会自动缓存主机发射序列。把两者同时打开后只测一次，无法解释单项效果。
+
+第一遍阅读 [forward](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1079) 时，先沿 `enable_fused_residual_layernorm=false` 分支走，再回到融合分支。
+
+## 2. 调用链与需要打开的符号
+
+```text
+Impl::forward
+  ├─ 初次 LN1（融合路径仍需要）
+  ├─ 每层 Attention projection
+  │   └─ fused_residual_layernorm(..., 当前层 LN2 参数)
+  ├─ 每层 MLP projection
+  │   └─ fused_residual_layernorm(..., 下一层 LN1 或最终 LN 参数)
+  └─ 采样行 Gather → LM head → Argmax
+
+同一 forward 外围：
+  元数据上传 → Graph 查找 / 捕获 → 执行 / replay → D2H 采样 → 同步
+```
+
+| 源码入口 | 关注点 |
+| --- | --- |
+| [标量融合 kernel](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L389) | 双输出、舍入与归约 |
+| [half2 融合 kernel](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L448) | 成对读写与 float 统计 |
+| [融合调用包装](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1052) | dtype 与偶数维度分派 |
+| [跨层参数选择](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1263) | 当前层结束后用哪一组 LN |
+| [Graph 查找](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1105) | key 与动态输入 |
+| [图实例化和执行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1321) | capture 结束不等于已经执行 |
+
+## 3. 融合 kernel 为什么仍有两个输出
+
+源码：[mini_vllm/cuda/gpt2_cuda_model_runner.cu，第 391—419 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L391)。以下为当前文件的原样摘录。
+
+```cpp
+template <typename T>
+__global__ void residual_layernorm_kernel(
+    T* residual_output, T* normalized_output,
+    const T* left, const T* right, const T* weight, const T* bias,
+    int batch_size, int channels) {
+    const int row = blockIdx.x;
+    const int thread = threadIdx.x;
+    if (row >= batch_size) return;
+    __shared__ float reduction[kThreads];
+
+    const std::size_t row_base =
+        static_cast<std::size_t>(row) * channels;
+    float local_sum = 0.0f;
+    for (int channel = thread; channel < channels;
+         channel += blockDim.x) {
+        const std::size_t index = row_base + channel;
+        const T residual = from_float<T>(
+            to_float(left[index]) + to_float(right[index]));
+        residual_output[index] = residual;
+        local_sum += to_float(residual);
+    }
+    reduction[thread] = local_sum;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
+        if (thread < stride) reduction[thread] += reduction[thread + stride];
+        __syncthreads();
+    }
+    const float mean = reduction[0] / channels;
+    __syncthreads();
+```
+
+要同时保存两种数学对象：
+
+```text
+residual_output = left + right
+normalized_output = LayerNorm(residual_output)
+```
+
+后续 Linear 使用 normalized；下一个残差连接需要未归一化的 residual。只输出 normalized 会丢失 skip connection 需要的值。
+
+这也是阅读融合代码的通用方法：先列出所有消费者，再决定哪些中间值可以消失。算子边界消失，不代表每个中间 Tensor 的语义都能删除。
+
+当前实现把 residual 写到 global memory，后面的方差与归一化还会读取它。因此可确定的是减少独立 launch 并合并一部分处理；不能说融合后完全消除了 residual 的显存读写。
+
+## 4. 最关键的两行：先舍入，再归约
+
+```cpp
+// 取自上面摘录，单独强调数值边界。
+const T residual = from_float<T>(to_float(left[index]) + to_float(right[index]));
+local_sum += to_float(residual);
+```
+
+未融合 FP16 路径先把加法结果写成 half，后一个 LN 再把 half 读成 float。融合为了尽量保持同样边界，也先转成 T，再参与统计。
+
+教学反例，设某个相加结果为 `1.0003`。FP16 在 1 附近不一定能准确保存它，舍入后可能变为 1。若融合直接把未舍入的 1.0003 累加到 mean，统计量便与未融合路径不同。
+
+PyTorch 对照：
+
+```python
+# 展示当前融合想维持的边界。
+r = (left.float() + right.float()).to(left.dtype)
+x = r.float()
+mean = x.mean(-1, keepdim=True)
+var = ((x - mean) ** 2).mean(-1, keepdim=True)
+y = ((x - mean) * torch.rsqrt(var + 1e-5)
+     * weight.float() + bias.float()).to(left.dtype)
+```
+
+数学公式相同不保证浮点操作序列相同。读训练/推理优化代码时，既要检查数据依赖，也要检查 cast 的位置。
+
+## 5. 跨层融合：为什么用下一层 LN1
+
+源码：[mini_vllm/cuda/gpt2_cuda_model_runner.cu，第 1263—1276 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1263)。以下为当前文件的原样摘录。
+
+```cpp
+            if (config_.enable_fused_residual_layernorm) {
+                const bool has_next_layer = layer + 1 < config_.num_layers;
+                const T* norm_weight = has_next_layer
+                    ? parameters_view.ln1w +
+                        static_cast<std::size_t>(layer + 1) * channels
+                    : parameters_view.lnfw;
+                const T* norm_bias = has_next_layer
+                    ? parameters_view.ln1b +
+                        static_cast<std::size_t>(layer + 1) * channels
+                    : parameters_view.lnfb;
+                fused_residual_layernorm(
+                    residual_a_.get<T>(), normalized_.get<T>(),
+                    residual_b_.get<T>(), projected_.get<T>(),
+                    norm_weight, norm_bias, batch_size, channels);
+```
+
+某层 MLP 残差输出就是下一层输入，所以下一次消费它的归一化是**下一层 LN1**。最后一层之后没有下一层，应该用最终 `lnfw/lnfb`。
+
+以两层模型手画：
+
+```text
+初始 x → LN1[0] → Attention[0]
+   → Add + LN2[0] → MLP[0]
+   → Add + LN1[1] → Attention[1]
+   → Add + LN2[1] → MLP[1]
+   → Add + LN_final → LM head
+```
+
+若错误使用当前层 LN1[0]，形状完全合法，CUDA 不会报非法访存，但模型语义已经改变。因此验证不能只有“kernel 没崩溃”；需要数值 reference。
+
+初始 LN1 不能一并删掉：它前面没有上一层 MLP 残差可供融合。查看 [初始 LN1 调用](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1145)，理解边界层通常需要单独处理。
+
+## 6. CUDA Graph 保存的是执行计划，不是旧请求的答案
+
+一次普通前向涉及很多 host API 调用。CUDA Graph 记录设备执行节点及依赖，实例化后可复用这套计划，减少后续逐个提交的开销。
+
+当前代码把动态 Token ID、position、页表、采样行号写进地址固定的 device buffer；图中 kernel 读取这些缓冲的**新内容**。
+
+| 项目 | 在当前 Runner 的 replay 间是否可变化 |
+| --- | --- |
+| Token ID、position、context、物理页号 | 可以，图外更新缓冲内容 |
+| 采样行索引的具体数值 | 可以，图外更新 sample_rows |
+| 本轮 N、采样行数 R | 对同一图固定，变化时查另一张图 |
+| 参数指针、激活缓冲地址、dtype | 当前 Runner 内固定 |
+| 模型层数、channels、融合配置 | 当前 Runner 内固定 |
+
+这不是把 PyTorch FX 图序列化，也不是 TorchDynamo 的 Python guard 系统。对于你熟悉的编译器背景，可以类比“复用执行计划”，但不要把两个机制的缓存键和失效条件混为一谈。
+
+## 7. Graph key 为什么是 (N,R)
+
+源码：[mini_vllm/cuda/gpt2_cuda_model_runner.cu，第 1105—1129 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1105)。以下为当前文件的原样摘录。
+
+```cpp
+        // Grid/GEMM 随输入行数和采样行数变化；行索引本身在图外更新。
+        const auto graph_key = std::make_pair(batch_size, num_logit_rows);
+        bool replay_existing_graph = false;
+        bool capture_new_graph = false;
+        if (config_.enable_cuda_graph) {
+            const auto graph = cuda_graphs_.find(graph_key);
+            if (graph != cuda_graphs_.end()) {
+                check_cuda(
+                    cudaGraphLaunch(graph->second.executable, stream_.get()),
+                    "launch cached CUDA graph");
+                replay_existing_graph = true;
+            } else {
+                // Stream capture cannot begin behind uncaptured metadata copies.
+                // The first use of each Token Batch therefore synchronizes once;
+                // subsequent replays keep metadata and graph launch ordered on
+                // the same stream without this synchronization.
+                check_cuda(
+                    cudaStreamSynchronize(stream_.get()),
+                    "prepare CUDA graph capture");
+                check_cuda(
+                    cudaStreamBeginCapture(
+                        stream_.get(), cudaStreamCaptureModeThreadLocal),
+                    "begin CUDA graph capture");
+                capture_new_graph = true;
+            }
+```
+
+N 决定主体模型的 GEMM 与 grid，R 决定 Gather、LM head 和 Argmax 的规模。只按 N 缓存，会在相同输入行数、不同采样资格时误用输出路径。
+
+例子：
+
+| 本轮 | N | R | 说明 | Graph 行为 |
+| --- | ---: | ---: | --- | --- |
+| 1 | 4 | 0 | 长 Prompt 的中间 chunk | 新建 `(4,0)` |
+| 2 | 4 | 1 | 单请求 Prompt 完成 | 新建 `(4,1)` |
+| 3 | 4 | 2 | 两个请求均完成输入 | 新建 `(4,2)` |
+| 4 | 4 | 1 | 仅第一个请求完成，行号变了 | 复用 `(4,1)` |
+| 5 | 4 | 0 | 再遇中间 chunk | 复用 `(4,0)` |
+
+第 4 轮说明：key 不需要包含具体采样行号，因为行号是 device buffer 中的数据。任务 09 的测试专门覆盖这个场景。
+
+当前按精确 `(N,R)` 存图，没有自动分桶、填充或缓存淘汰。shape 多样时图数量和首次捕获成本可能增长，不能宣称任意动态形状都没有额外开销。
+
+## 8. Capture、Instantiate、Launch 的三个阶段
+
+源码：[mini_vllm/cuda/gpt2_cuda_model_runner.cu，第 1321—1340 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1321)。以下为当前文件的原样摘录。
+
+```cpp
+        if (capture_new_graph) {
+            CudaGraphEntry entry;
+            check_cuda(
+                cudaStreamEndCapture(stream_.get(), &entry.graph),
+                "end CUDA graph capture");
+            check_cuda(
+                cudaGraphInstantiate(
+                    &entry.executable, entry.graph, nullptr, nullptr, 0),
+                "instantiate CUDA graph");
+            const auto inserted =
+                cuda_graphs_.emplace(graph_key, entry);
+            if (!inserted.second) {
+                cudaGraphExecDestroy(entry.executable);
+                cudaGraphDestroy(entry.graph);
+                throw std::logic_error("duplicate CUDA graph batch key");
+            }
+            check_cuda(
+                cudaGraphLaunch(entry.executable, stream_.get()),
+                "launch newly captured CUDA graph");
+        }
+```
+
+第一次形状出现时：
+
+1. 元数据已经上传，先同步，再开始 capture。
+2. 调用普通前向里的 kernel/cuBLAS API，把操作记录到图。
+3. EndCapture 得到图描述。
+4. Instantiate 得到可执行实例。
+5. Launch 才让这次输入按图真正执行。
+
+如果省掉第 5 步，第一次遇到形状时采样缓冲可能还是旧值。仅“成功捕获”不代表当前推理已经完成。
+
+后续 replay 不再重新遍历模型的 launch 代码，但仍需要上传新元数据，下载采样 ID，并在返回 CPU 前等待完成。
+
+## 9. 资源生命周期怎样保证图不读悬空地址
+
+源码：[mini_vllm/cuda/gpt2_cuda_model_runner.cu，第 729—737 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L729)。以下为当前文件的原样摘录。
+
+```cpp
+    ~Impl() {
+        for (auto& item : cuda_graphs_) {
+            if (item.second.executable != nullptr) {
+                cudaGraphExecDestroy(item.second.executable);
+            }
+            if (item.second.graph != nullptr) {
+                cudaGraphDestroy(item.second.graph);
+            }
+        }
+```
+
+Graph 中持有设备地址，因此 Runner 不能在图仍可 replay 时把激活缓冲搬到另一个地址。当前缓冲在构造时按容量分配，析构先销毁图资源，再由成员析构释放设备内存。
+
+必须区分：host vector 每轮可以重新分配，因为常规路径上传完成后图读取的是 device buffer；device buffer 的地址则要稳定。
+
+这段析构展示正常资源管理，不代表所有 capture 失败路径都具备完整自动恢复。出现 CUDA 错误后，不应未经验证就把同一个 Runner 当作可继续服务的实例。
+
+## 10. 怎样判断优化到底有没有价值
+
+先用同一配置运行四组合，再查看原始点和 profiler：
+
+- 融合主要观察 kernel 数、kernel 本身时长、显存读写与整个 step 时间。
+- Graph 主要观察 host launch 间隙和稳态总时间，同时记录图缓存是否已预热。
+- 模型正确性以 logits/Token 对照验证，不能用时间变化代替。
+- 单项改善可能被新增 Gather、内存瓶颈或噪声抵消，所以不能承诺组合收益是两者相加。
+
+首次捕获、预热后的 replay、进程总时间是三种指标。文末历史实验说明具体计时方式；再次运行时应确认哪些形状已经进入缓存。
+
+## 11. 练习与参考答案
+
+**题 1：融合只输出 normalized，为什么会错？**
+
+答案：下一次残差连接仍要使用未归一化的 residual。丢掉它会改变 Transformer 公式。
+
+**题 2：把 residual 的 cast 放到 LN 完成后，是否等价？**
+
+答案：浮点上不一定等价，mean/variance 使用的输入改变了。当前代码显式保留先写低精度 residual 的边界。
+
+**题 3：N=4,R=1，采样行从 3 变为 1，要新图吗？**
+
+答案：当前实现不需要；更新 `sample_rows` 内容后可复用 `(4,1)`。若 R 从 1 变为 2，则需要另一张图。
+
+**题 4：Graph 能让 Attention 少读取一半 KV 吗？**
+
+答案：当前 Graph 只改变提交方式，算子读写内容由相同 kernel 决定。KV 工作量不会因 replay 自动减少。
+
+**题 5：已 capture 的模型缓冲可以重新 cudaMalloc 后接着 replay 吗？**
+
+答案：不能直接假设安全；图还记录旧指针。当前通过固定分配避免这个问题，重新分配需要更新或重建执行计划。
+
+下一篇：[任务 08：Prefix Cache 的状态与所有权](task_08_prefix_cache_zh.md)。
+
+---
+
+## 原开发记录与阶段实验
+
+以下保留本任务开发时的目标、验收与测量记录。涉及后续任务改动的行为，以前面的当前源码精读为准；旧性能数据只代表记录中的配置。
+
 前置知识：[四种图与缓存的区别](from_pytorch/04_pytorch_to_cuda.md#7-四种容易混为一谈的缓存图)。
 如果你熟悉 FX/Inductor，要特别区分编译图和 CUDA Graph 的运行时重放。
 

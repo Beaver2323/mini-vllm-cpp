@@ -6,6 +6,32 @@
 本文是整个项目的源码索引，负责回答“先学什么、去哪里看、从哪里调用、怎样验证”。每个
 专项文档继续解释实现细节。不要一次把所有文件通读；按本文的阶段完成代码跟踪和练习。
 
+## 逐任务源码精读怎么使用
+
+任务 01—11 已逐篇扩写，打开原文件即可看到新的源码精读。每篇先讲当前实现，再保留
+原开发记录与历史实验；不用在另一份总览中寻找遗漏的关键代码。
+
+这一轮精读核对的源码基线是 `59027d7`。源码摘录标明文件和行号，点击可定位；行号随
+后续开发可能变化，函数名和调用链是更稳定的阅读入口。标注“教学伪代码”的代码框用于
+说明语义，不是项目提供的 Python API，也不保证可以直接编译。
+
+| 任务 | 本篇重点推导 | 读完后的检查 |
+| --- | --- | --- |
+| [01 请求到模型](task_01_gpt2_model_runner_zh.md) | Engine 三阶段、CPU 微步、采样资格、Workspace 生命周期 | 手推 Prompt 5、预算 3、生成 3 的四轮计数 |
+| [02 Benchmark](task_02_benchmark_zh.md) | 工作量、计时边界、首 Token 观察点、分位数插值 | 重算 344/92 输入数及 TTFT/TPOT |
+| [03 CUDA Attention](task_03_cuda_paged_attention_zh.md) | 五维地址、线程分工、两次归约、共享内存同步 | 算出页内地址并解释每个 barrier |
+| [04 GPU Runner](task_04_gpu_model_runner_zh.md) | 设备缓冲、stream、cuBLAS 布局、层内残差数据流 | 从 PyTorch Linear 对应到 GEMM 参数 |
+| [05 Packed Prefill](task_05_multi_token_prefill_zh.md) | token budget、请求边界、逐行元数据、因果可见性 | 手写 Decode + Prefill 混合输入表 |
+| [06 混合精度](task_06_mixed_precision_zh.md) | 权重转换、存储/累加 dtype、half2、显存公式 | 标出一次前向中的舍入位置 |
+| [07 融合与 Graph](task_07_fusion_cuda_graph_zh.md) | 双输出、跨层 LN、Graph key、捕获与资源生命周期 | 解释 `(N,R)` 相同但行索引不同为何能重放 |
+| [08 Prefix Cache](task_08_prefix_cache_zh.md) | 完整历史 key、引用所有权、LRU、分配失败副作用 | 手推 A/B 共享一页到 clear 的全部 ref 变化 |
+| [09 采样行裁剪](task_09_sample_rows_zh.md) | 资格判断、Gather、紧凑输出还原、R=0 | 对齐 packed 行、logits 行和请求索引 |
+| [10 缓存测量](task_10_prefix_benchmark_zh.md) | seed 构造、off/miss/hit、计数差值、CSV 分析 | 算出四种前缀下输入数并解释计时成本 |
+| [11 双卡 PD](task_11_pd_disaggregation_zh.md) | 首 Token 交接、页号重映射、host staging、并发与背压 | 复述 17 Token 请求迁移后的第一步 Decode |
+
+建议每次只读一篇的 2—3 节：先读代码框并找到调用方，再遮住答案做手算，最后使用已有
+测试或 CPU 演示检查预测。篇幅增加是为了支持逐段学习，不要求一次读完所有功能。
+
 ## 1. 先建立全局图
 
 项目分成控制面和执行面：

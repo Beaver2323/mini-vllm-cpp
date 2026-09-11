@@ -3,6 +3,11 @@
 **如果你会 PyTorch，但没接触过 vLLM，请从 [零基础中文学习入口](doc/from_pytorch/README.md) 开始。**
 这条路线先用 CPU 小实验讲生成、缓存和调度，再对应本项目源码与 nano-vLLM；不要求先安装 vLLM。
 
+**任务 01—11 均已扩写为中文源码精读。** 每篇前半部分包含实际代码摘录、调用位置、
+PyTorch 对照、状态或地址手算、调试方法和练习答案；后半部分保留阶段实验。
+从 [任务 01](doc/task_01_gpt2_model_runner_zh.md) 开始，或用
+[逐任务阅读索引](doc/paged_inference_learning_zh.md#逐任务源码精读怎么使用) 选择当前要学的部分。
+
 这是一个基于 [llm.c](https://github.com/karpathy/llm.c) GPT-2 实现构建的教学型
 LLM 推理引擎。项目使用 C++ 实现推理执行路径，并参考 vLLM 的核心抽象逐步加入
 增量解码、分页 KV Cache、请求调度和连续批处理。
@@ -64,8 +69,8 @@ Scheduler::commit：更新状态，完成时释放 Block
 ```
 
 图中的模块已经连接成端到端执行循环。Scheduler 分配的物理 Block ID 会直接映射到
-KVCachePool；ModelRunner 将 Chunked Prefill 拆成动态微批次，并在完成输入后执行
-greedy sampling 和状态提交。
+KVCachePool；CPU ModelRunner 把 Chunked Prefill 拆成动态微批次，CUDA ModelRunner
+把本轮全部 Token 打包执行，两者都在完成输入后进行 greedy sampling 和状态提交。
 
 ## 代码结构
 

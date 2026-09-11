@@ -1,5 +1,265 @@
 # 开发任务 05：GPU Multi-Token Prefill
 
+你已经会写 PyTorch 前向，本任务只改变“这次前向装进来哪些位置”。核心是把调度输出的多个不等长片段拼成 N 行，同时保留每行所属请求、绝对位置与可见历史。
+
+学习目标：手写一个包含 Decode 和 Prefill 的 ModelInput，并解释为什么 packed 后不会跨请求 Attention，也不会偷看未来位置。
+
+## 1. 三个相似词先分清
+
+| 概念 | 回答的问题 | 本项目对应 |
+| --- | --- | --- |
+| Continuous batching | 每轮哪些请求一起推进？ | Scheduler 动态选择请求 |
+| Chunked prefill | 一个长 Prompt 本轮算多少？ | token budget 限制每请求本轮数量 |
+| Packed execution | 选中的片段怎样组织成模型输入？ | 按请求拼接所有本轮 Token 行 |
+
+它们不是同义词。CPU Runner 可以有 continuous batching 和 chunked prefill，却仍在内部逐 Token 微步执行。任务 05 才把 GPU 前向改为本轮全部 Token 一次组织。
+
+这也不是 PyTorch 的 `PackedSequence` RNN 接口；这里只是“去除 padding 后拼接”的数据组织方式。
+
+## 2. 源码阅读顺序与调用链
+
+| 文件与符号 | 重点 |
+| --- | --- |
+| [Scheduler::try_schedule](../mini_vllm/scheduler.hpp#L123) | 本轮长度从哪里来 |
+| [ModelInput 字段](../mini_vllm/model_input.hpp#L17) | N 行与请求数的区别 |
+| [prepare_packed_model_input](../mini_vllm/model_input.hpp#L41) | 外层请求循环、内层 Token 循环 |
+| [Runner::run](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L740) | 只构造一个 packed input |
+| [Attention 可见长度](../mini_vllm/cuda/paged_attention.cu#L121) | 因果约束落在哪个循环上 |
+| [GPU 测试](../dev/cuda/test_gpt2_cuda_model_runner.cu) | 混合批次、跨页、输出一致性 |
+
+```text
+schedule → items=[A:qA, B:qB, ...]
+         → packed N=qA+qB+...
+         → 每层对 N 行做 Linear/LN/Attention
+         → 找到已完成输入请求的最后一行
+         → 每个请求提交自己的 q 与采样结果
+```
+
+CPU Runner 的 `max(qA,qB)` 次微步，变成 GPU Runner 的一次 packed forward。这不意味着只发射一次 CUDA kernel：每层仍包含多个 kernel 和 GEMM。
+
+## 3. token budget 如何决定片段长度
+
+源码：[mini_vllm/scheduler.hpp，第 123—143 行](../mini_vllm/scheduler.hpp#L123)。以下为当前文件的原样摘录。
+
+```cpp
+    bool try_schedule(const std::shared_ptr<Sequence>& sequence,
+                      SchedulerOutput& output) {
+        if (sequence->status() == SequenceStatus::Waiting) {
+            block_manager_.apply_prefix_cache(*sequence);
+        }
+        if (sequence->pending_tokens() == 0) {
+            throw std::logic_error("sequence has no input token awaiting model execution");
+        }
+        const std::size_t budget =
+            config_.max_num_batched_tokens - output.num_batched_tokens;
+        const std::size_t count = std::min(sequence->pending_tokens(), budget);
+        const std::size_t target = sequence->num_computed_tokens() + count;
+        if (!block_manager_.ensure_capacity(*sequence, target)) {
+            return false;
+        }
+        output.items.push_back(
+            {sequence, sequence->is_prefill() ? ExecutionPhase::Prefill
+                                              : ExecutionPhase::Decode,
+             count});
+        output.num_batched_tokens += count;
+        return true;
+```
+
+预算限制的是 **本轮新增计算的输入 Token 数**，不是上下文总长度，也不是最多输出多少个 Token。
+
+假设 A 已进入 running、还剩 1 个 Decode 输入，B 是新请求、有 20 个 Prompt Token，预算 8。若 A 先被遍历，计划是 `A:1, B:7`，共 8 行；B 只算前 7 个 Prompt，不能采样。
+
+running 队列也可能包含未完成的 Prefill。源码是按 running 顺序优先推进，不能表述成“所有 Decode 永远严格优先于所有 Prefill”。具体延迟行为还取决于队列顺序和预算。
+
+`ensure_capacity` 在计划进入输出前准备好目标位置的页。如果没有页，代码返回 false；当前系统没有自动把已运行请求的 KV 换出并重算的抢占机制。
+
+## 4. query_start_locations 是请求边界，不是 position
+
+源码：[mini_vllm/model_input.hpp，第 49—65 行](../mini_vllm/model_input.hpp#L49)。以下为当前文件的原样摘录。
+
+```cpp
+    for (std::size_t item_index = 0;
+         item_index < output.items.size(); ++item_index) {
+        const ScheduledItem& item = output.items[item_index];
+        if (item.sequence == nullptr || item.num_scheduled_tokens == 0) {
+            throw std::invalid_argument("scheduled item is invalid");
+        }
+        const Sequence& sequence = *item.sequence;
+        if (sequence.block_table().size() > max_blocks_per_sequence) {
+            throw std::out_of_range(
+                "sequence block table exceeds ModelRunner capacity");
+        }
+        input.query_start_locations.push_back(input.batch_size());
+
+        for (std::size_t offset = 0;
+             offset < item.num_scheduled_tokens; ++offset) {
+            const std::size_t position =
+                sequence.num_computed_tokens() + offset;
+```
+
+进入每个请求的 Token 循环前，记录“当前已经拼入多少行”。最后再补 N，就得到长度为 `请求数+1` 的边界数组。
+
+例如本轮长度 `[1,3,2]`：
+
+```text
+packed 行： 0 | 1 2 3 | 4 5
+请求：      A |   B   |  C
+qstart：  [0, 1, 4, 6]
+```
+
+B 的行区间是 `[qstart[1],qstart[2]) = [1,4)`，最后一行为 3。这个边界只能找出“本轮片段的最后一行”；是否可采样还要检查整个已知输入是否都处理完。
+
+如果 B 原先已计算 10 个 Token，它的 position 是 10、11、12，而 packed 行号仍是 1、2、3。把两者混用会让位置 Embedding 和 KV 写入都出错。
+
+## 5. 每一行都带独立元数据
+
+源码：[mini_vllm/model_input.hpp，第 79—100 行](../mini_vllm/model_input.hpp#L79)。以下为当前文件的原样摘录。
+
+```cpp
+            input.token_ids.push_back(sequence.token_ids()[position]);
+            input.positions.push_back(model_input_checked_int(
+                position, "token position is too large"));
+            input.context_lengths.push_back(model_input_checked_int(
+                position + 1, "context length is too large"));
+            const std::size_t physical_slot =
+                static_cast<std::size_t>(physical_block) *
+                    block_manager.block_size() +
+                block_manager.slot_for_token(position);
+            input.slot_mapping.push_back(model_input_checked_int(
+                physical_slot, "physical KV slot is too large"));
+            input.request_ids.push_back(sequence.request_id());
+            input.scheduled_item_indices.push_back(item_index);
+
+            const std::size_t row_start = input.block_tables.size();
+            input.block_tables.resize(
+                row_start + max_blocks_per_sequence, -1);
+            std::copy(
+                sequence.block_table().begin(),
+                sequence.block_table().end(),
+                input.block_tables.begin() +
+                    static_cast<std::ptrdiff_t>(row_start));
+```
+
+本实现给同一请求的每个 Token 行重复一份页表，便于复用任务 03 的“一行一个 Query” Attention 接口。这样教学路径简单，但元数据开销随 N×页表宽度增长。
+
+可以把它想成 PyTorch 中先 `cat` 多个输入片段，再为每行构造一个“属于哪个序列”的描述。单纯 `torch.cat` Token，而不带请求边界、位置和历史映射，无法保证正确 Attention。
+
+`slot_mapping` 是当前行新 KV 的唯一写地址；`block_tables` 是这行读历史的映射。页表相同不意味着写槽相同：同一请求连续 3 个 Token 会写同一物理页里的不同位置。
+
+## 6. 一个完整的混合批次，逐项手算
+
+使用生产代码的页大小 16，设最大页表宽度为 4：
+
+- A 的 Prompt 已完成，现在 `computed=17,total=18`，待算 ID 为 101，页表 `[5,2]`。
+- B 是新 Prompt `[201,202,203]`，`computed=0,total=3`，页表 `[7]`。
+- 本轮计划 A 算 1 个，B 算 3 个。
+
+| packed 行 | 请求 | token | position | context | slot | 页表（补齐） |
+| ---: | --- | ---: | ---: | ---: | ---: | --- |
+| 0 | A | 101 | 17 | 18 | 33 | `[5,2,-1,-1]` |
+| 1 | B | 201 | 0 | 1 | 112 | `[7,-1,-1,-1]` |
+| 2 | B | 202 | 1 | 2 | 113 | `[7,-1,-1,-1]` |
+| 3 | B | 203 | 2 | 3 | 114 | `[7,-1,-1,-1]` |
+
+边界数组是 `[0,1,4]`。A 采样行 0，B 采样行 3。模型完成后得到两个输出 ID，提交时 A 的 computed 增加 1，B 增加 3。
+
+特别注意 B 的行 1 可见长度只有 1。虽然行 2、3 的 K/V 已经写进物理页 7，它们不会被行 1 的 Attention 读取。
+
+如果 B 的 Prompt 实际还有第 4 个 Token，但本轮只算 3 个，上表输入不变，B 的采样资格改变：它应返回 `-1`，任务 09 的采样行列表也只包含 A 的行 0。
+
+## 7. 为什么一个模型层内可以同时写全部新 K/V
+
+对一个标准 causal Transformer 层，当前层的 Q/K/V 来自每个位置的上一层 hidden。该层的 Linear/LN 对 Token 行独立操作，不需要先算完本层前一个位置的 Attention 才能投影下一个位置的 K。
+
+```python
+# 单层的教学逻辑。
+q, k, v = project(all_scheduled_rows)
+write_all_new_kv(k, v, slots)
+for row in rows:
+    out[row] = attention(q[row], history_up_to(position[row]))
+```
+
+同一层的因果性由读取范围维护；层与层之间则按 stream 顺序执行。后一层使用前一层已经完成的 hidden，因此不会绕过 Transformer 的依赖。
+
+这解释了 packed Prefill 为什么数学上成立，也说明它不是把自回归 Decode 的多个未知输出一次猜出来。未来输出 ID 尚未知晓，仍然需要下一轮采样后再执行。
+
+## 8. 为什么可以提升 GEMM 利用率
+
+设 channels=768。CPU 微步里一个请求的 QKV 是 `[1,768]×[768,2304]`；长 Prompt 32 个位置分别调用 32 次，形状很窄。
+
+packed 后可以是 `[32,768]×[768,2304]`。参数权重与数学表达式不变，但一次 GEMM 包含更多行，减少重复的 host 调用与小矩阵开销。
+
+不要从这里推导“32 个 Token 一定快 32 倍”：Attention 仍按每行可见长度访问历史，GEMM 实际算法、显存带宽和 kernel launch 也会影响结果。
+
+最有意义的实测指标是：相同生成输出下总时间是否降低、TTFT/TPOT 是否变化、GPU timeline 中小型重复 GEMM 是否减少。
+
+## 9. 预算不是越大越好
+
+预算增大时可以减少 Prefill 分块轮数，但代价是单轮执行更长，Decode 结果可能等待整轮结束才交付。
+
+| 修改 | 常见潜在收益 | 需要观察的代价 |
+| --- | --- | --- |
+| budget 变大 | 更大的 GEMM、较少调度轮 | Decode 等待、激活容量增大 |
+| budget 变小 | 更细的调度机会 | Prefill 轮数与提交开销增多 |
+| max sequences 变大 | 更多请求同时运行 | KV 压力与每轮竞争增加 |
+
+这些是解释实验的方向，不是没有条件的性能保证。用文末 budget sweep 的同一负载验证，先记录实际每轮 N，再解释曲线。
+
+调试时若 `ModelInput.batch_size()` 不等于调度总 Token 数，优先检查拼接循环，而不是调整 CUDA block size。
+
+源码：[mini_vllm/model_input.hpp，第 103—109 行](../mini_vllm/model_input.hpp#L103)。以下为当前文件的原样摘录。
+
+```cpp
+    input.query_start_locations.push_back(input.batch_size());
+    if (input.batch_size() == 0 ||
+        input.batch_size() != output.num_batched_tokens) {
+        throw std::logic_error(
+            "packed ModelInput does not match scheduled token count");
+    }
+    return input;
+```
+
+这个断言验证调度计划没有在数据组织过程中被遗漏或重复。它不能证明每一行的 position 和 slot 都正确，仍需要上面的手算与参考测试。
+
+## 10. 练习入口与答案
+
+先运行 [PyTorch packed 演示](from_pytorch/examples/attention_and_pages.py)：
+
+```bash
+conda run -p /home/miniconda3/envs/zyf1 python \
+  doc/from_pytorch/examples/attention_and_pages.py packed
+```
+
+它用小 Tensor 检查按采样行选择 hidden 与投影 logits 的对应关系。生产代码页大小 16，演示页大小 4，迁移手算时不要照抄演示 slot。
+
+**题 1：本轮请求数 3，计划长度 `[2,1,5]`，N 与 qstart 是多少？**
+
+答案：N=8，qstart=`[0,2,3,8]`；各片段最后行为 1、2、7。
+
+**题 2：Prompt 长 10，computed=4，本轮调度 3，最后行能产生输出吗？**
+
+答案：不能，算到 computed=7 后还缺 3 个 Prompt 输入。末行有 logits，不等于这行应对外采样。
+
+**题 3：两个请求 packed 行相邻，为什么不会互相 Attention？**
+
+答案：每行使用所属请求的页表和 context，而不是把整个 packed 张量当成一个共享历史序列。
+
+**题 4：将 context 全填为本轮最大长度能减少分支吗？**
+
+答案：会改变语义，短行可能读未来位置、未初始化槽或不存在的页。不能以这种方式换取规则形状。
+
+**题 5：一个 32 Token Prompt 能 packed 计算，为什么不能一次 Decode 32 个普通 greedy 输出？**
+
+答案：Prompt 的 ID 全已知，可以并行构造当前层输入；后续输出 ID 依赖前一次采样，当前引擎没有实现投机解码等额外机制。
+
+下一篇：[任务 06：存储精度与计算精度](task_06_mixed_precision_zh.md)。
+
+---
+
+## 原开发记录与阶段实验
+
+以下保留本任务开发时的目标、验收与测量记录。涉及后续任务改动的行为，以前面的当前源码精读为准；旧性能数据只代表记录中的配置。
+
 前置知识：[分页与 Packed 元数据的完整手算](from_pytorch/03_pages_and_packed.md#7-一组元数据完整手算)。
 先分清请求数 B、输入行数 N、采样行数 R，再读本任务的矩阵化执行。
 

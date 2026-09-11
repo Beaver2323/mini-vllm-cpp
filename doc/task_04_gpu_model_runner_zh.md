@@ -1,5 +1,370 @@
 # 开发任务 04：将 CUDA PagedAttention 接入 GPU ModelRunner
 
+任务 03 只验证 Attention；这一篇把 Embedding、LayerNorm、矩阵乘、Attention、MLP 和采样连成完整 GPU 前向。阅读时先关闭脑中的融合与 CUDA Graph，把普通执行路径走通。
+
+学习目标：能够画出一个 Transformer 层的缓冲区读写关系，解释为什么每步不需要把权重、KV 和全部 logits 搬回 CPU。
+
+## 1. 先找到三个不同层次的入口
+
+| 层次 | 源码 | 职责 |
+| --- | --- | --- |
+| 服务驱动 | [gpt2_cuda_engine.hpp](../mini_vllm/cuda/gpt2_cuda_engine.hpp) | 接收请求，调用调度与提交 |
+| Runner 接口 | [gpt2_cuda_model_runner.cuh](../mini_vllm/cuda/gpt2_cuda_model_runner.cuh) | 对外提供 run、统计与调试接口 |
+| 数值执行 | [gpt2_cuda_model_runner.cu](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1079) | 管理设备缓冲、cuBLAS、kernel 与同步 |
+
+```text
+GPT2CudaEngine::step
+  ├─ scheduler.schedule
+  ├─ GPT2CudaModelRunner::run
+  │   └─ Impl::run
+  │       ├─ prepare_packed_model_input
+  │       ├─ 选择 forward<float / half / bfloat16>
+  │       └─ 把采样结果映射回请求
+  └─ scheduler.commit
+```
+
+`Impl` 是私有实现，帮助头文件隐藏 CUDA 细节。它不是额外的网络服务，也不是另一个进程。当前 Runner 在一个进程内管理某张卡上的资源。
+
+任务 04 初期曾使用单 Token GPU 微步；**当前源码已经包含任务 05 的 packed 路径**。文末历史数字保留当时配置，下面以当前代码为准。
+
+## 2. 从 torch.empty 到 DeviceBuffer
+
+源码：[mini_vllm/cuda/gpt2_cuda_model_runner.cu，第 70—94 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L70)。以下为当前文件的原样摘录。
+
+```cpp
+template <typename T>
+class DeviceBuffer {
+public:
+    explicit DeviceBuffer(std::size_t count) : count_(count) {
+        if (count == 0) throw std::invalid_argument("zero-sized CUDA buffer");
+        check_cuda(
+            cudaMalloc(&pointer_, count * sizeof(T)), "cudaMalloc");
+    }
+
+    ~DeviceBuffer() {
+        if (pointer_ != nullptr) cudaFree(pointer_);
+    }
+
+    DeviceBuffer(const DeviceBuffer&) = delete;
+    DeviceBuffer& operator=(const DeviceBuffer&) = delete;
+
+    T* get() { return pointer_; }
+    const T* get() const { return pointer_; }
+    std::size_t count() const { return count_; }
+    std::size_t bytes() const { return count_ * sizeof(T); }
+
+private:
+    T* pointer_ = nullptr;
+    std::size_t count_ = 0;
+};
+```
+
+这段类承担了你在 PyTorch Tensor 中习惯由框架处理的最基础职责：申请设备内存、保存指针与大小、析构时释放。
+
+逐行抓住三个限制：
+
+1. `count` 是元素数，实际申请 `count*sizeof(T)` 字节。
+2. 禁止复制，避免两个对象持有同一个裸指针后重复 `cudaFree`。
+3. `get()` 只返回指针，不携带 Tensor 的 shape/stride/device 元信息；这些约束由上层保存和检查。
+
+不要将它理解成拥有完整 PyTorch Tensor 功能的替代品。没有自动广播、引用视图、autograd 或跨设备复制语义。
+
+当前代码还用 `DeviceTensorBuffer` 管理按运行配置选择的 2/4 字节存储，具体精度边界见任务 06。
+
+## 3. stream 与 cuBLAS 必须处在同一执行序列
+
+源码：[mini_vllm/cuda/gpt2_cuda_model_runner.cu，第 139—165 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L139)。以下为当前文件的原样摘录。
+
+```cpp
+class CudaStream {
+public:
+    CudaStream() {
+        check_cuda(
+            cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking),
+            "cudaStreamCreateWithFlags");
+    }
+    ~CudaStream() {
+        if (stream_ != nullptr) cudaStreamDestroy(stream_);
+    }
+    cudaStream_t get() const { return stream_; }
+
+private:
+    cudaStream_t stream_ = nullptr;
+};
+
+class CublasHandle {
+public:
+    CublasHandle(cudaStream_t stream, CudaDataType data_type) {
+        check_cublas(cublasCreate(&handle_), "cublasCreate");
+        check_cublas(cublasSetStream(handle_, stream), "cublasSetStream");
+        check_cublas(
+            cublasSetMathMode(
+                handle_, data_type != CudaDataType::FP32
+                    ? CUBLAS_DEFAULT_MATH
+                    : CUBLAS_PEDANTIC_MATH),
+            "cublasSetMathMode");
+```
+
+`cudaStreamNonBlocking` 创建独立执行队列；`cublasSetStream` 把 GEMM 放到同一队列。这样一层中的：
+
+```text
+LayerNorm 写 normalized
+  → cuBLAS 读 normalized / 写 qkv
+  → split 读 qkv
+  → Attention 读 Q、K、V
+```
+
+无需每个算子后都 `cudaDeviceSynchronize`。依赖由 stream 顺序表达，最后需要 CPU 读取采样结果时才等待。
+
+如果 cuBLAS 留在另一个无显式依赖的 stream，上述指针依赖不会自动由 C++ 语句顺序保证。对于 PyTorch 开发者，这相当于自己承担原本由当前流约定及框架调度维护的执行顺序。
+
+## 4. 缓冲区提前分配：容量与本轮 N 不相等
+
+源码：[mini_vllm/cuda/gpt2_cuda_model_runner.cu，第 698—715 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L698)。以下为当前文件的原样摘录。
+
+```cpp
+          key_cache_(cache_elements(), storage_size()),
+          value_cache_(cache_elements(), storage_size()),
+          residual_a_(batch_channels(), storage_size()),
+          residual_b_(batch_channels(), storage_size()),
+          normalized_(batch_channels(), storage_size()),
+          qkv_(static_cast<std::size_t>(max_num_tokens_) *
+               3 * config_.channels, storage_size()),
+          query_(batch_channels(), storage_size()),
+          key_(batch_channels(), storage_size()),
+          value_(batch_channels(), storage_size()),
+          attention_(batch_channels(), storage_size()),
+          projected_(batch_channels(), storage_size()),
+          hidden_(static_cast<std::size_t>(max_num_tokens_) *
+                  4 * config_.channels, storage_size()),
+          sampled_hidden_(static_cast<std::size_t>(max_logit_rows()) *
+                          config_.channels, storage_size()),
+          logits_(static_cast<std::size_t>(max_logit_rows()) *
+                  config_.padded_vocab_size) {
+```
+
+这里按最大调度 Token 数分配激活，但每轮只使用前 N 行。`max_num_sequences` 与 `max_num_tokens` 是不同容量：一个长 Prefill 请求可以独占很多 Token 行。
+
+| 缓冲 | 当前有效形状 | 覆盖时机 |
+| --- | --- | --- |
+| `residual_a/b` | `[N,C]` | 每个残差分支轮流更新 |
+| `normalized` | `[N,C]` | LN1、LN2、最终 LN 重复使用 |
+| `qkv` | `[N,3C]` | 每层 QKV 投影后 |
+| `query/key/value` | 各 `[N,H,D]` | 每层 split 后 |
+| `attention/projected` | `[N,C]` | Attention 与投影后 |
+| `hidden` | `[N,4C]` | MLP 中间层 |
+| `logits` | `[R,Vp]` | 仅当前需要采样的行，详见任务 09 |
+
+这些中间激活没有按 `L` 再分配一份，因为推理不需要保存每一层激活供 backward 使用。KV 则包含层维度，下一轮仍要读取每一层的历史 K/V，不能在层间覆盖同一份。
+
+## 5. H2D 元数据与 D2H 输出
+
+源码：[mini_vllm/cuda/gpt2_cuda_model_runner.cu，第 1091—1104 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1091)。以下为当前文件的原样摘录。
+
+```cpp
+        copy_metadata(token_ids_, input.token_ids, "copy token ids");
+        copy_metadata(positions_, input.positions, "copy positions");
+        copy_metadata(
+            context_lengths_, input.context_lengths,
+            "copy context lengths");
+        copy_metadata(
+            slot_mapping_, input.slot_mapping, "copy slot mapping");
+        copy_metadata(
+            block_tables_, input.block_tables, "copy block tables");
+
+        const int num_logit_rows = static_cast<int>(last_logit_token_indices_.size());
+        if (config_.enable_sample_row_pruning && num_logit_rows > 0) {
+            copy_metadata(sample_rows_, last_logit_token_indices_, "copy sample rows");
+        }
+```
+
+每步复制的是小型整数数组。权重在初始化时已经上传，KV 也一直位于 GPU；不会每轮把完整历史 K/V 经 CPU 往返一次。
+
+源码：[mini_vllm/cuda/gpt2_cuda_model_runner.cu，第 1355—1368 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1355)。以下为当前文件的原样摘录。
+
+```cpp
+    void copy_metadata(
+        DeviceBuffer<int>& destination, const std::vector<int>& source,
+        const char* operation) {
+        if (source.size() > destination.count()) {
+            throw std::out_of_range("CUDA metadata exceeds buffer capacity");
+        }
+        const std::size_t bytes = source.size() * sizeof(int);
+        check_cuda(
+            cudaMemcpyAsync(
+                destination.get(), source.data(), bytes,
+                cudaMemcpyHostToDevice, stream_.get()),
+            operation);
+        last_host_to_device_bytes_ += bytes;
+    }
+```
+
+`source` 是 host vector，`destination` 是预分配的设备数组。异步 API 并不保证 pageable host 内存一定与计算重叠；这里首先依赖的是正确的 stream 顺序和函数结束前的同步，不能仅看到 `Async` 就宣称消除了传输开销。
+
+以 `N=4,max_blocks=4,R=2` 为例，基础元数据包含四个 N 长数组和 N×4 页表，共 `(4*4+4*4)*4=128` 字节；开启采样行裁剪还上传 R 个行号，增加 8 字节。这个数不含一次性的权重上传。
+
+## 6. 对照 PyTorch 阅读 QKV 与 Attention 调用点
+
+源码：[mini_vllm/cuda/gpt2_cuda_model_runner.cu，第 1166—1189 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1166)。以下为当前文件的原样摘录。
+
+```cpp
+            matmul(
+                qkv_.get<T>(), normalized_.get<T>(),
+                parameters_view.qkvw +
+                    static_cast<std::size_t>(layer) * 3 * channels * channels,
+                parameters_view.qkvb +
+                    static_cast<std::size_t>(layer) * 3 * channels,
+                batch_size, channels, 3 * channels);
+            split_qkv_kernel<T><<<
+                blocks_for(channel_elements), kThreads, 0, stream_.get()>>>(
+                qkv_.get<T>(), query_.get<T>(), key_.get<T>(), value_.get<T>(),
+                batch_size, channels);
+            check_last_kernel("split_qkv_kernel");
+
+            check_cuda(
+                paged_attention_decode(
+                    query_.get<T>(), key_.get<T>(), value_.get<T>(),
+                    key_cache_.get<T>(), value_cache_.get<T>(),
+                    block_tables_.get(), context_lengths_.get(),
+                    slot_mapping_.get(), attention_.get<T>(), batch_size,
+                    num_pages_, config_.num_layers, layer,
+                    config_.num_heads, channels / config_.num_heads,
+                    max_blocks_per_sequence_, max_context_length_,
+                    stream_.get()),
+                "paged_attention_decode");
+```
+
+对应 PyTorch 的概念顺序：
+
+```python
+# 教学伪代码，paged_attention 不是本项目提供的 Python API。
+qkv = F.linear(normalized, qkv_weight, qkv_bias)  # [N,3C]
+q, k, v = qkv.chunk(3, dim=-1)                   # 各 [N,C]
+att = paged_attention(q, k, v, kv_pool, metadata)
+```
+
+真实 split 把数据写进三份独立缓冲，不能简单把它当成 PyTorch 的零拷贝 view。Attention 使用 `channels/num_heads` 作为 D，缓存地址还需要当前 `layer`。
+
+参数层偏移为 `layer*3*C*C`，因为每层 QKV weight 有 `3C×C` 个元素。bias 偏移为 `layer*3*C`，不能复用权重的 stride。
+
+函数名仍叫 `paged_attention_decode`，但当前接收的是 packed 输入行。代码行为由参数和可见长度决定，不能仅根据历史函数名判断它只支持 Decode。
+
+## 7. cuBLAS 的转置参数为什么看起来反了
+
+源码：[mini_vllm/cuda/gpt2_cuda_model_runner.cu，第 985—997 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L985)。以下为当前文件的原样摘录。
+
+```cpp
+    template <typename T>
+    void matmul(
+        T* output, const T* input, const T* weight,
+        const T* bias, int batch_size, int input_width,
+        int output_width) {
+        const float alpha = 1.0f;
+        const float beta = 0.0f;
+        if constexpr (std::is_same<T, float>::value) {
+            check_cublas(cublasSgemm(
+                cublas_.get(), CUBLAS_OP_T, CUBLAS_OP_N,
+                output_width, batch_size, input_width, &alpha,
+                weight, input_width, input, input_width, &beta,
+                output, output_width), "cublasSgemm");
+```
+
+PyTorch `F.linear(X,W)` 使用行优先理解：`X[N,I]`、`W[O,I]`，结果 `Y=XWᵀ[N,O]`。
+
+传统 cuBLAS 接口按列优先解释同一块内存：
+
+| C++ 中的行优先数组 | cuBLAS 对同一指针的列优先解释 |
+| --- | --- |
+| X `[N,I]` | Xᵀ `[I,N]` |
+| W `[O,I]` | Wᵀ `[I,O]` |
+| Y `[N,O]` | Yᵀ `[O,N]` |
+
+因此调用计算 `Yᵀ = W × Xᵀ`：第一个操作数 weight 要 `OP_T`，第二个 input 用 `OP_N`，`m=O,n=N,k=I`。这是布局解释，不是额外启动一次转置 kernel。
+
+`beta=0` 表示覆盖输出，旧缓冲内容不参与结果。bias 由后续 kernel 加入，本接口没有把 bias 融合进 GEMM epilogue。
+
+手算检查：N=2,I=3,O=4 时，输出只有 8 个元素；如果把 `m,n` 填成 2、4 却保持原 leading dimension，就可能写出形状错误但地址仍合法的结果，单纯 memcheck 不一定发现。
+
+## 8. 残差为什么需要保存两条值
+
+未融合路径的一层可以写成：
+
+```python
+# 数学对照；实际使用预分配缓冲。
+x1 = x + attn(ln1(x))
+x2 = x1 + mlp(ln2(x1))
+```
+
+`residual_a` 保存 x，Attention 投影写入 `projected`，相加后写到 `residual_b`。后续 LN2 写 `normalized`，MLP 最终再写 `projected`，相加回 `residual_a`。
+
+```text
+a(x) ───────┐                    b(x1) ──────┐
+LN1→Attn→projected → Add → b      LN2→MLP→projected → Add → a(x2)
+```
+
+读写同一个缓冲前要检查旧值是否仍有消费者。因为残差连接还要读原输入，所以不能随意把所有中间结果都原地写入 `residual_a`。
+
+任务 07 的融合会同时输出残差值和归一化值，仍保留两种数学状态；它没有把残差连接删除。
+
+## 9. 函数返回时 CPU 究竟得到了什么
+
+源码：[mini_vllm/cuda/gpt2_cuda_model_runner.cu，第 1342—1352 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1342)。以下为当前文件的原样摘录。
+
+```cpp
+        std::vector<int> sampled(num_logit_rows);
+        if (num_logit_rows > 0) check_cuda(
+            cudaMemcpyAsync(
+                sampled.data(), sampled_token_ids_.get(),
+                sampled.size() * sizeof(int), cudaMemcpyDeviceToHost,
+                stream_.get()),
+            "copy sampled token ids");
+        check_cuda(
+            cudaStreamSynchronize(stream_.get()),
+            "finish CUDA GPT-2 micro batch");
+        return sampled;
+```
+
+GPU argmax 的结果只是 R 个整数，拷回后再转换成与调度 item 等长的数组，未完成 chunk 对应 `-1`。
+
+`cudaStreamSynchronize` 使返回的 host Token 可以立即被 `Scheduler::commit` 使用。这也解释了 Benchmark 围住 `step()` 的主机时间为什么包含 GPU 执行。
+
+调试接口 `last_logits_for_testing()` 额外复制 logits，只应在数值检查时调用。当前日志行数是 R，配套 `last_logit_token_indices()` 才能知道每行属于 packed 输入的哪一行；不要把调试数据误作常规输出传输量。
+
+## 10. 正确性定位与练习
+
+读 [GPU Runner 测试](../dev/cuda/test_gpt2_cuda_model_runner.cu#L200)，它不仅检查最后是否结束，还要求实际出现混合 Prefill/Decode、释放后的页复用，并对 CPU reference 比较 logits/Token。
+
+遇到错误推荐沿着第一个分歧排查：
+
+1. 输入 Token、position、context、页表是否一致。
+2. Embedding 输出是否一致。
+3. 第一个出错层的 LN、QKV、Attention、MLP 哪一项开始偏离。
+4. 精度路径一致时再比较最终 logits；避免仅凭最后 Token 不同就认定 Attention 错误。
+
+**题 1：所有激活按层保存，是否更接近 PyTorch？**
+
+答案：普通训练会为 backward 保留更多状态，但当前仅做推理，层间可复用缓冲。按层保存会增加显存，并不是推理正确性的要求。
+
+**题 2：每次 run 都把完整 logits 拷回 CPU 吗？**
+
+答案：常规路径仅返回采样 ID。测试接口可以额外下载 logits，这部分不应混入正常服务传输统计。
+
+**题 3：`cudaMemcpyAsync` 之后立刻读取 host 输出安全吗？**
+
+答案：只有依赖和完成条件已满足才安全。当前代码通过同一 stream 上的同步保证，然后才返回。
+
+**题 4：GPU 0 的 Runner 能否在切到 GPU 1 后随便析构？**
+
+答案：资源属于创建时的设备。当前外层入口和析构维护设备上下文，任务 11 会解释 DeviceGuard 与跨卡线程的关系。
+
+下一篇：[任务 05：为什么一轮应打包多个 Token](task_05_multi_token_prefill_zh.md)。
+
+---
+
+## 原开发记录与阶段实验
+
+以下保留本任务开发时的目标、验收与测量记录。涉及后续任务改动的行为，以前面的当前源码精读为准；旧性能数据只代表记录中的配置。
+
 前置知识：[用 PyTorch 经验读 CUDA Runner](from_pytorch/04_pytorch_to_cuda.md)。
 下文的单 Token 微批次与内存数值是任务 04 历史基线。当前 GPU 已使用 Packed Prefill；任务 09
 后 logits 只返回采样行，H2D 还会上传采样行索引。CPU 路径仍保留单 Token 微批次。
