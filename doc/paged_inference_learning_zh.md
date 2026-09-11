@@ -52,6 +52,16 @@ scheduler_.commit(output, result.sampled_token_ids);
 | 10 | Prefix Cache | `block_manager.hpp`、`scheduler.hpp` | [任务 08 详细手册](task_08_prefix_cache_zh.md) | 跟踪命中、共享、释放和 LRU |
 | 11 | Benchmark 与性能证据 | `benchmark/`、`benchmark/results/` | [任务 02](task_02_benchmark_zh.md) | 区分 TTFT、TPOT、吞吐和初始化成本 |
 
+新增任务按下面顺序继续，不必同时学习：
+
+| 任务 | 先看代码 | 再看文档 | 完成标准 |
+| --- | --- | --- | --- |
+| 09 采样行裁剪 | Runner::run、gather_sample_rows_kernel、graph_key | [逐函数讲解](task_09_sample_rows_zh.md) | 手算 N、R，解释为何需要二维 Graph Key |
+| 10 前缀性能对照 | benchmark_gpt2_cuda_prefix_cache.cu 的 measure/main | [计时与调用链](task_10_prefix_benchmark_zh.md) | 看懂 off/miss/hit 的计数和 TTFT |
+| 11 双 GPU PD | gpt2_pd_engine.hpp 的 step/try_handoff，再看 Runner::copy_kv_to | [请求交接与 KV 迁移](task_11_pd_disaggregation_zh.md) | 手推 Prompt 17 Token 的交接及 D 第一步 |
+
+三项的 [实测数据、正确性与复现命令](../benchmark/results/task09_11/README.md) 独立保存。
+
 建议每天只完成一个阶段。先读“主要代码”，再运行指定测试，最后不看文档复述调用链。
 
 ## 3. 阶段一：Sequence 是请求状态的唯一来源
@@ -176,8 +186,8 @@ while (!waiting_.empty() && budget_remains) {
 
 - 结构定义：[`ModelInput`](../mini_vllm/model_input.hpp#L15-L31)
 - Packed 构造：[`prepare_packed_model_input`](../mini_vllm/model_input.hpp#L41-L110)
-- GPU 调用：[`GPT2CudaModelRunner::Impl::run`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L711-L753)
-- GPU H2D：[`forward<T>`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L940-L960)
+- GPU 调用：[`GPT2CudaModelRunner::Impl::run`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L740-L798)
+- GPU H2D：[`forward<T>`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1079-L1099)
 
 | 数组 | 生产方式 | GPU 消费位置 | 含义 |
 | --- | --- | --- | --- |
@@ -274,9 +284,9 @@ Softmax 使用减最大值保证稳定性，低精度存储路径仍转 FP32 累
 ### 代码位置
 
 - 配置/接口：[`gpt2_cuda_model_runner.cuh`](../mini_vllm/cuda/gpt2_cuda_model_runner.cuh#L13-L58)
-- 设备 Buffer 生命周期：[`gpt2_cuda_model_runner.cu:650--709`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L650-L709)
-- Runner 上层入口：[`Impl::run`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L711-L753)
-- Transformer 前向：[`forward<T>`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L940-L1199)
+- 设备 Buffer 生命周期：[`gpt2_cuda_model_runner.cu:650--709`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L676-L738)
+- Runner 上层入口：[`Impl::run`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L740-L798)
+- Transformer 前向：[`forward<T>`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1079-L1353)
 - 端到端测试：[`test_gpt2_cuda_model_runner.cu`](../dev/cuda/test_gpt2_cuda_model_runner.cu)
 
 GPU Runner 不为每步重新 `cudaMalloc`。权重、KV Cache、中间激活和 logits 在构造时按最大
@@ -306,8 +316,8 @@ Position、Context Length、Slot 和 Block Table，所以合并 GEMM 不会破�
 ### 代码位置
 
 - 精度枚举：[`CudaDataType`](../mini_vllm/cuda/gpt2_cuda_model_runner.cuh#L13-L17)
-- 普通 GEMM：[`matmul`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L847-L885)
-- 词表 GEMM：[`logits_matmul`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L887-L911)
+- 普通 GEMM：[`matmul`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L986-L1024)
+- 词表 GEMM：[`logits_matmul`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1026-L1050)
 - `half2` PagedAttention：[`paged_attention.cu:76--93`](../mini_vllm/cuda/paged_attention.cu#L76-L93)
 
 低精度路径使用 FP16/BF16 存权重、激活和 KV Cache；LayerNorm 均值/方差、Attention Dot、
@@ -327,7 +337,7 @@ BF16 写成与 FP16 同等级的正式性能结论。
 GPT2CudaConfig.enable_fused_residual_layernorm / enable_cuda_graph
   └─ Impl::forward<T>
        ├─ copy_metadata（Graph 外）
-       ├─ cuda_graphs_.find(total_tokens)
+       ├─ cuda_graphs_.find({total_tokens, num_logit_rows})
        ├─ Replay，或 Capture 整段计算
        └─ fused_residual_layernorm（Attention 后、MLP 后）
 ```
@@ -336,7 +346,8 @@ GPT2CudaConfig.enable_fused_residual_layernorm / enable_cuda_graph
 
 ```cpp
 copy_metadata(...);                       // 更新固定地址里的动态数据
-const auto graph = cuda_graphs_.find(batch_size);
+const auto graph_key = std::make_pair(batch_size, num_logit_rows);
+const auto graph = cuda_graphs_.find(graph_key);
 if (graph != cuda_graphs_.end()) {
     cudaGraphLaunch(graph->second.executable, stream_.get());
 }

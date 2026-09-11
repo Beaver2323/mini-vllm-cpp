@@ -1,0 +1,43 @@
+{
+  "metadata": {
+    "git_commit": "94996b4",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "compute_capability": "8.6",
+    "compiled_gpu_arch": "sm_86",
+    "execution_mode": "packed_multi_token_prefill",
+    "precision": "fp16",
+    "residual_layernorm_fusion": false,
+    "cuda_graph": true,
+    "sample_row_pruning": false,
+    "scheduler_token_budget": 64,
+    "driver_version": 12050,
+    "runtime_version": 12050,
+    "workload": "prompt lengths 8/16/24/32, four output tokens each, all arrivals at t=0",
+    "timing_scope": "schedule through synchronous GPU greedy token completion; engine initialization excluded",
+    "correctness": "all generated tokens equal independent CPU full-prefix greedy reference",
+    "warmup_runs": 1,
+    "repeats": 7
+  },
+  "summary": {
+    "total_time_median_ms": 5.314496,
+    "throughput_median_tokens_per_second": 3010.633558,
+    "ttft_p50_ms": 1.153981,
+    "ttft_p95_ms": 2.167935,
+    "tpot_p50_ms": 1.018068,
+    "tpot_p95_ms": 1.192127,
+    "request_latency_p50_ms": 4.380359,
+    "request_latency_p95_ms": 5.174108,
+    "weight_bytes": 248951808,
+    "kv_cache_bytes": 9437184,
+    "activation_bytes": 14450688
+  },
+  "runs": [
+    {"repeat": 1, "total_ms": 5.330300, "throughput_tokens_per_second": 3001.707221, "metadata_h2d_bytes": 2944, "projected_rows": 92, "ttft_p50_ms": 1.170177, "ttft_p95_ms": 2.189228, "tpot_p50_ms": 1.014006, "tpot_p95_ms": 1.198883, "request_latency_p50_ms": 4.396140, "request_latency_p95_ms": 5.189804, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 2, "total_ms": 5.316969, "throughput_tokens_per_second": 3009.233268, "metadata_h2d_bytes": 2944, "projected_rows": 92, "ttft_p50_ms": 1.155062, "ttft_p95_ms": 2.167935, "tpot_p50_ms": 1.020520, "tpot_p95_ms": 1.191615, "request_latency_p50_ms": 4.380934, "request_latency_p95_ms": 5.176248, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 3, "total_ms": 5.307441, "throughput_tokens_per_second": 3014.635490, "metadata_h2d_bytes": 2944, "projected_rows": 92, "ttft_p50_ms": 1.150617, "ttft_p95_ms": 2.163925, "tpot_p50_ms": 1.011995, "tpot_p95_ms": 1.192127, "request_latency_p50_ms": 4.366567, "request_latency_p95_ms": 5.166009, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 4, "total_ms": 5.299220, "throughput_tokens_per_second": 3019.312276, "metadata_h2d_bytes": 2944, "projected_rows": 92, "ttft_p50_ms": 1.153981, "ttft_p95_ms": 2.165462, "tpot_p50_ms": 1.018068, "tpot_p95_ms": 1.189978, "request_latency_p50_ms": 4.370684, "request_latency_p95_ms": 5.159644, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 5, "total_ms": 5.316544, "throughput_tokens_per_second": 3009.473824, "metadata_h2d_bytes": 2944, "projected_rows": 92, "ttft_p50_ms": 1.151373, "ttft_p95_ms": 2.168588, "tpot_p50_ms": 1.024718, "tpot_p95_ms": 1.196724, "request_latency_p50_ms": 4.381292, "request_latency_p95_ms": 5.175942, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 6, "total_ms": 5.314496, "throughput_tokens_per_second": 3010.633558, "metadata_h2d_bytes": 2944, "projected_rows": 92, "ttft_p50_ms": 1.158471, "ttft_p95_ms": 2.173819, "tpot_p50_ms": 1.020794, "tpot_p95_ms": 1.194527, "request_latency_p50_ms": 4.380359, "request_latency_p95_ms": 5.174108, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 7, "total_ms": 5.296465, "throughput_tokens_per_second": 3020.882796, "metadata_h2d_bytes": 2944, "projected_rows": 92, "ttft_p50_ms": 1.150170, "ttft_p95_ms": 2.159264, "tpot_p50_ms": 1.013501, "tpot_p95_ms": 1.187169, "request_latency_p50_ms": 4.361604, "request_latency_p95_ms": 5.155966, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]}
+  ]
+}

@@ -92,8 +92,8 @@ int main() {
         static_cast<int>(second_prompt.size()), &reference);
     const float* expected_logits = reference.acts().logits +
         (second_prompt.size() - 1) * model.config.padded_vocab_size;
-    const float* actual_logits = gpu_logits.data() +
-        model.config.padded_vocab_size;
+    assert(engine.model_runner().last_logit_token_indices() == std::vector<int>{1});
+    const float* actual_logits = gpu_logits.data();
     double max_abs_error = 0.0;
     for (int token = 0; token < model.config.vocab_size; ++token) {
         max_abs_error = std::max(

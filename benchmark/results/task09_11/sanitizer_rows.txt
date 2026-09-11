@@ -1,0 +1,11 @@
+========= COMPUTE-SANITIZER
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+sample rows [0,1,2,1,0], same N/different R, dynamic gather indices, graph replay PASS; max_error=0.000267029
+========= ERROR SUMMARY: 0 errors

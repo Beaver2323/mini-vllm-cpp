@@ -1,0 +1,12 @@
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+remapped KV transfer + full-vocabulary decode logits PASS
+PD pipeline constrained=0 transfers=5 concurrent_steps=9 CPU/single-GPU equality and reclamation PASS
+PD pipeline constrained=1 transfers=5 concurrent_steps=9 CPU/single-GPU equality and reclamation PASS
+All PD tests PASS

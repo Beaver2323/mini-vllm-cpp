@@ -1,0 +1,43 @@
+{
+  "metadata": {
+    "git_commit": "94996b4",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "compute_capability": "8.6",
+    "compiled_gpu_arch": "sm_86",
+    "execution_mode": "packed_multi_token_prefill",
+    "precision": "fp16",
+    "residual_layernorm_fusion": false,
+    "cuda_graph": false,
+    "sample_row_pruning": true,
+    "scheduler_token_budget": 64,
+    "driver_version": 12050,
+    "runtime_version": 12050,
+    "workload": "prompt lengths 8/16/24/32, four output tokens each, all arrivals at t=0",
+    "timing_scope": "schedule through synchronous GPU greedy token completion; engine initialization excluded",
+    "correctness": "all generated tokens equal independent CPU full-prefix greedy reference",
+    "warmup_runs": 1,
+    "repeats": 7
+  },
+  "summary": {
+    "total_time_median_ms": 8.037522,
+    "throughput_median_tokens_per_second": 1990.663291,
+    "ttft_p50_ms": 1.717941,
+    "ttft_p95_ms": 3.106597,
+    "tpot_p50_ms": 1.672859,
+    "tpot_p95_ms": 1.678181,
+    "request_latency_p50_ms": 6.697420,
+    "request_latency_p95_ms": 7.836113,
+    "weight_bytes": 248951808,
+    "kv_cache_bytes": 9437184,
+    "activation_bytes": 2285568
+  },
+  "runs": [
+    {"repeat": 1, "total_ms": 8.301843, "throughput_tokens_per_second": 1927.282894, "metadata_h2d_bytes": 3008, "projected_rows": 16, "ttft_p50_ms": 1.809428, "ttft_p95_ms": 3.244953, "tpot_p50_ms": 1.706671, "tpot_p95_ms": 1.722331, "request_latency_p50_ms": 6.927283, "request_latency_p95_ms": 8.095288, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 2, "total_ms": 7.959328, "throughput_tokens_per_second": 2010.219958, "metadata_h2d_bytes": 3008, "projected_rows": 16, "ttft_p50_ms": 1.702329, "ttft_p95_ms": 3.077534, "tpot_p50_ms": 1.640677, "tpot_p95_ms": 1.641575, "request_latency_p50_ms": 6.602469, "request_latency_p95_ms": 7.755457, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 3, "total_ms": 7.950491, "throughput_tokens_per_second": 2012.454325, "metadata_h2d_bytes": 3008, "projected_rows": 16, "ttft_p50_ms": 1.644708, "ttft_p95_ms": 3.012740, "tpot_p50_ms": 1.673068, "tpot_p95_ms": 1.678181, "request_latency_p50_ms": 6.605407, "request_latency_p95_ms": 7.748394, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 4, "total_ms": 8.049569, "throughput_tokens_per_second": 1987.684061, "metadata_h2d_bytes": 3008, "projected_rows": 16, "ttft_p50_ms": 1.720890, "ttft_p95_ms": 3.109475, "tpot_p50_ms": 1.669077, "tpot_p95_ms": 1.676522, "request_latency_p50_ms": 6.700119, "request_latency_p95_ms": 7.846855, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 5, "total_ms": 8.037293, "throughput_tokens_per_second": 1990.720010, "metadata_h2d_bytes": 3008, "projected_rows": 16, "ttft_p50_ms": 1.652535, "ttft_p95_ms": 3.055123, "tpot_p50_ms": 1.671574, "tpot_p95_ms": 1.700015, "request_latency_p50_ms": 6.674227, "request_latency_p95_ms": 7.832489, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 6, "total_ms": 8.103684, "throughput_tokens_per_second": 1974.410651, "metadata_h2d_bytes": 3008, "projected_rows": 16, "ttft_p50_ms": 1.744116, "ttft_p95_ms": 3.151067, "tpot_p50_ms": 1.678693, "tpot_p95_ms": 1.686644, "request_latency_p50_ms": 6.764689, "request_latency_p95_ms": 7.902239, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]},
+    {"repeat": 7, "total_ms": 8.037522, "throughput_tokens_per_second": 1990.663291, "metadata_h2d_bytes": 3008, "projected_rows": 16, "ttft_p50_ms": 1.717941, "ttft_p95_ms": 3.106597, "tpot_p50_ms": 1.672859, "tpot_p95_ms": 1.672907, "request_latency_p50_ms": 6.697420, "request_latency_p95_ms": 7.836113, "generated_tokens": [[25,220,11839,11482],[286,262,5445,2378],[3526,3526,3526,3526],[271,275,8158,992]]}
+  ]
+}

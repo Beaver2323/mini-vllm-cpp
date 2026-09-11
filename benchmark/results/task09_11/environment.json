@@ -1,0 +1,29 @@
+{
+  "说明": "源码和 checkpoint 哈希标识实际运行版本；git_head 可能是未提交改动的父提交。",
+  "utc_time": "2026-09-11T02:20:45.073643+00:00",
+  "git_head": "94996b441c251f9735b280ea0275fd23d2b480d3",
+  "git_status": " M .gitignore\n M Makefile\n M README.md\n M benchmark/benchmark_gpt2_cuda_serving.cu\n M dev/cuda/test_gpt2_cuda_model_runner.cu\n M dev/cuda/test_gpt2_cuda_prefix_cache.cu\n M doc/mini_vllm_roadmap_zh.md\n M doc/paged_inference_learning_zh.md\n M doc/task_07_fusion_cuda_graph_zh.md\n M doc/task_08_prefix_cache_zh.md\n M mini_vllm/cuda/gpt2_cuda_engine.hpp\n M mini_vllm/cuda/gpt2_cuda_model_runner.cu\n M mini_vllm/cuda/gpt2_cuda_model_runner.cuh\n M train_gpt2.c\n?? benchmark/benchmark_gpt2_cuda_prefix_cache.cu\n?? benchmark/benchmark_gpt2_pd_serving.cu\n?? benchmark/results/task09_11/\n?? dev/cuda/test_gpt2_cuda_sample_rows.cu\n?? dev/cuda/test_gpt2_pd_engine.cu\n?? doc/task_09_sample_rows_zh.md\n?? doc/task_10_prefix_benchmark_zh.md\n?? doc/task_11_pd_disaggregation_zh.md\n?? mini_vllm/cuda/gpt2_pd_engine.hpp\n?? scripts/validate_pd_cuda.sh\n",
+  "omp_threads": "8",
+  "checkpoint_sha256": "3da8b207584030bcdcd207cf7a99952e3421dce92da218b351071857511bf162",
+  "source_sha256": {
+    "mini_vllm/block_manager.hpp": "e76aafcb37fb453a6260f6537929d0fdd10a1eeeae68d4a7b749d4eed9d3e25d",
+    "mini_vllm/cuda/gpt2_cuda_engine.hpp": "aa7d7e5f353bb1d87fe334d6396a58feba1348fa825080a2de3a61f4a4ac6f43",
+    "mini_vllm/cuda/gpt2_pd_engine.hpp": "a96af56dc5ad5a8d03fab1f131ded5e8a15848aa0b6c2275bca6c066f2d2e790",
+    "mini_vllm/gpt2_engine.hpp": "703c2acf33924d908e84651de08e28c358dacdd6901695dc6ca8e021f68d605b",
+    "mini_vllm/gpt2_model_runner.hpp": "7f6c4f90c14f6394c0b139aef5c4fa95393159243f853a07e267c3547a8d1710",
+    "mini_vllm/model_input.hpp": "3b68d4615b4d558b26a766abe780c66fe1d3caed61328ca9d1ad239652079aca",
+    "mini_vllm/scheduler.hpp": "cc0892eff445c92ffb22ffd862402e73f1c846798e1fa2cd837e0caa4c77dc23",
+    "mini_vllm/sequence.hpp": "526414f9a376be30abff1f342876f6b21d8c25ab33c3b9d0295788490bb42e44",
+    "mini_vllm/cuda/gpt2_cuda_model_runner.cu": "2ce7a0f9a7423fbbd2f1e26740941e41320ed04653bb887faa536680e11b7e38",
+    "mini_vllm/cuda/gpt2_cuda_model_runner.cuh": "32831b76ced6f852c52075e6ca75077ab9bba3dc1919fbd1063cbd7d695f85a8",
+    "mini_vllm/cuda/paged_attention.cu": "0cbda2a963ec5c5ac53a0e3479820aaa0599629e3d0b43c5472cc31723fe9de6",
+    "mini_vllm/cuda/paged_attention.cuh": "efe23e32eecd3351296b97286360fa104c91be25a83955ef3c64b38849347697",
+    "train_gpt2.cpp": "76d1e6d2284c3774c2368a917d4a777da6efd31d1d32a8c3d425a6d43b0c4150",
+    "benchmark/benchmark_gpt2_cuda_prefix_cache.cu": "24b6d12151443c2fa02515bdcbdfb56f906a5689f9877ce3259f4a8444783710",
+    "benchmark/benchmark_gpt2_cuda_serving.cu": "5fd7889251f6db76dd4a239f3ed4df120125e83b934597c7f57f9061c2bde2c4",
+    "benchmark/benchmark_gpt2_pd_serving.cu": "39d9ae0aa39a52c218050726c7ceac38749386c056c0e5d56c17944a63d772e4"
+  },
+  "gpu": "index, name, driver_version\n0, NVIDIA GeForce RTX 3090, 555.42.06\n1, NVIDIA GeForce RTX 3090, 555.42.06\n",
+  "topology": "\t\u001b[4mGPU0\tGPU1\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\u001b[0m\nGPU0\t X \tPIX\t0-27\t0\t\tN/A\nGPU1\tPIX\t X \t0-27\t0\t\tN/A\n\nLegend:\n\n  X    = Self\n  SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)\n  NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node\n  PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)\n  PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)\n  PIX  = Connection traversing at most a single PCIe bridge\n  NV#  = Connection traversing a bonded set of # NVLinks\n",
+  "nvcc": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2024 NVIDIA Corporation\nBuilt on Thu_Jun__6_02:18:23_PDT_2024\nCuda compilation tools, release 12.5, V12.5.82\nBuild cuda_12.5.r12.5/compiler.34385749_0\n"
+}

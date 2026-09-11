@@ -42,6 +42,7 @@ struct Options {
     CudaDataType data_type = CudaDataType::FP32;
     bool enable_fusion = false;
     bool enable_cuda_graph = false;
+    bool enable_sample_row_pruning = true;
     std::string json_path =
         "benchmark/results/gpt2_cuda_packed_rtx3090.json";
     std::string csv_path =
@@ -56,6 +57,7 @@ struct RunResult {
     std::vector<double> request_latency_ms;
     std::vector<std::vector<int>> generated_tokens;
     std::size_t metadata_h2d_bytes = 0;
+    std::size_t projected_rows = 0;
     std::size_t weight_bytes = 0;
     std::size_t kv_cache_bytes = 0;
     std::size_t activation_bytes = 0;
@@ -140,6 +142,7 @@ RunResult run_once(
     while (!engine.is_finished()) {
         const CudaEngineStepResult step = engine.step();
         const Clock::time_point now = Clock::now();
+        result.projected_rows += engine.model_runner().last_logit_token_indices().size();
         result.metadata_h2d_bytes +=
             engine.model_runner().last_host_to_device_bytes();
         for (std::size_t index = 0; index < step.request_ids.size(); ++index) {
@@ -211,6 +214,8 @@ Options parse_options(int argc, char** argv) {
             options.enable_fusion = false;
         } else if (argument == "--fusion") {
             options.enable_fusion = true;
+        } else if (argument == "--full-logits") {
+            options.enable_sample_row_pruning = false;
         } else if (argument == "--cuda-graph") {
             options.enable_cuda_graph = true;
         } else if (argument == "--json") {
@@ -257,7 +262,7 @@ void write_json(
     const std::string& path, const cudaDeviceProp& properties,
     int driver_version, int runtime_version,
     std::size_t token_budget, CudaDataType data_type,
-    bool enable_fusion, bool enable_cuda_graph,
+    bool enable_fusion, bool enable_cuda_graph, bool enable_sample_row_pruning,
     const std::vector<RunResult>& runs) {
     std::vector<double> total_ms;
     std::vector<double> throughput;
@@ -297,6 +302,8 @@ void write_json(
          << (enable_fusion ? "true" : "false") << ",\n"
          << "    \"cuda_graph\": "
          << (enable_cuda_graph ? "true" : "false") << ",\n"
+         << "    \"sample_row_pruning\": "
+         << (enable_sample_row_pruning ? "true" : "false") << ",\n"
          << "    \"scheduler_token_budget\": " << token_budget << ",\n"
          << "    \"driver_version\": " << driver_version << ",\n"
          << "    \"runtime_version\": " << runtime_version << ",\n"
@@ -332,6 +339,7 @@ void write_json(
              << run.throughput_tokens_per_second
              << ", \"metadata_h2d_bytes\": "
              << run.metadata_h2d_bytes
+             << ", \"projected_rows\": " << run.projected_rows
              << ", \"ttft_p50_ms\": "
              << percentile(run.ttft_ms, 0.5)
              << ", \"ttft_p95_ms\": "
@@ -398,6 +406,7 @@ int main(int argc, char** argv) {
             options.data_type,
             options.enable_fusion,
             options.enable_cuda_graph,
+            options.enable_sample_row_pruning,
         };
         GPT2CudaEngine engine(
             config, model.params_memory, model.num_parameters,
@@ -434,7 +443,7 @@ int main(int argc, char** argv) {
         write_json(
             options.json_path, properties, driver_version,
             runtime_version, options.token_budget, options.data_type,
-            options.enable_fusion, options.enable_cuda_graph, runs);
+            options.enable_fusion, options.enable_cuda_graph, options.enable_sample_row_pruning, runs);
         write_csv(options.csv_path, runs);
         gpt2_free(&model);
         std::cout << "GPU 服务 Benchmark 原始结果已写入 "

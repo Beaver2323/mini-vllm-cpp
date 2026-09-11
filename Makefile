@@ -328,3 +328,19 @@ profile_gpt2cu: profile_gpt2.cu $(NVCC_CUDNN)
 clean:
 	$(REMOVE_FILES) $(TARGETS)
 	$(REMOVE_BUILD_OBJECT_FILES)
+
+.PHONY: test_gpt2_pd_engine benchmark_gpt2_cuda_prefix_cache
+
+test_gpt2_pd_engine: dev/cuda/test_gpt2_pd_engine.cu mini_vllm/cuda/gpt2_cuda_model_runner.cu mini_vllm/cuda/paged_attention.cu
+	$(NVCC) $(NVCC_FLAGS) -Xcompiler -fopenmp -Xcompiler -pthread $^ $(NVCC_INCLUDES) -lcublas -lgomp -lm $(CUDA_OUTPUT_FILE)
+
+benchmark_gpt2_cuda_prefix_cache: benchmark/benchmark_gpt2_cuda_prefix_cache.cu mini_vllm/cuda/gpt2_cuda_model_runner.cu mini_vllm/cuda/paged_attention.cu
+	$(NVCC) $(NVCC_FLAGS) -Xcompiler -fopenmp $^ $(NVCC_INCLUDES) -lcublas -lgomp -lm $(CUDA_OUTPUT_FILE)
+
+.PHONY: benchmark_gpt2_pd_serving
+benchmark_gpt2_pd_serving: benchmark/benchmark_gpt2_pd_serving.cu mini_vllm/cuda/gpt2_cuda_model_runner.cu mini_vllm/cuda/paged_attention.cu
+	$(NVCC) $(NVCC_FLAGS) -Xcompiler -fopenmp -Xcompiler -pthread $^ $(NVCC_INCLUDES) -lcublas -lgomp -lm $(CUDA_OUTPUT_FILE)
+
+.PHONY: test_gpt2_cuda_sample_rows
+test_gpt2_cuda_sample_rows: dev/cuda/test_gpt2_cuda_sample_rows.cu mini_vllm/cuda/gpt2_cuda_model_runner.cu mini_vllm/cuda/paged_attention.cu
+	$(NVCC) $(NVCC_FLAGS) -Xcompiler -fopenmp $^ $(NVCC_INCLUDES) -lcublas -lgomp -lm $(CUDA_OUTPUT_FILE)

@@ -46,3 +46,7 @@ dev/cuda/global_norm
 
 # log files
 *.log
+test_gpt2_pd_engine
+test_gpt2_cuda_sample_rows
+benchmark_gpt2_cuda_prefix_cache
+benchmark_gpt2_pd_serving

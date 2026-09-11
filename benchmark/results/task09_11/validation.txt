@@ -1,0 +1,203 @@
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+sample rows [0,1,2,1,0], same N/different R, dynamic gather indices, graph replay PASS; max_error=0.000267029
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+sample rows [0,1,2,1,0], same N/different R, dynamic gather indices, graph replay PASS; max_error=3.05176e-05
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+CUDA GPT2ModelRunner test passed: precision=fp32, residual_layernorm_fusion=off, cuda_graph=off, full GPU decode, mixed batch, cross-page growth, block reuse
+max_abs_logit_error=0.000198364
+argmax_mismatches=0
+weight_bytes=497903616 kv_cache_bytes=3538944 activation_bytes=777216 metadata_h2d_bytes=1296
+request_lengths=19,6,18 free_blocks=3 graph_cache_size=0
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+CUDA GPT2ModelRunner test passed: precision=fp16, residual_layernorm_fusion=on, cuda_graph=on, full GPU decode, mixed batch, cross-page growth, block reuse
+max_abs_logit_error=0.0750275
+argmax_mismatches=0
+weight_bytes=248951808 kv_cache_bytes=1769472 activation_bytes=589824 metadata_h2d_bytes=1296
+request_lengths=19,6,18 free_blocks=3 graph_cache_size=4
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+CUDA GPT2ModelRunner test passed: precision=fp16, residual_layernorm_fusion=off, cuda_graph=off, full GPU decode, mixed batch, cross-page growth, block reuse
+max_abs_logit_error=0.122009
+argmax_mismatches=0
+weight_bytes=248951808 kv_cache_bytes=1769472 activation_bytes=1806336 metadata_h2d_bytes=1280
+request_lengths=19,6,18 free_blocks=3 graph_cache_size=0
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+CUDA prefix cache test passed: cached_blocks=1 hit_blocks=1 second_prompt_tokens=18 second_scheduled_tokens=2 max_abs_logit_error=0.104347
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+remapped KV transfer + full-vocabulary decode logits PASS
+PD pipeline constrained=0 transfers=5 concurrent_steps=9 CPU/single-GPU equality and reclamation PASS
+PD pipeline constrained=1 transfers=5 concurrent_steps=9 CPU/single-GPU equality and reclamation PASS
+All PD tests PASS
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+prefix=16 off/miss/hit CPU equality PASS
+prefix=64 off/miss/hit CPU equality PASS
+prefix=128 off/miss/hit CPU equality PASS
+prefix=256 off/miss/hit CPU equality PASS
+Prefix Cache benchmark: benchmark/results/task09_11/prefix.csv
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+step=0 GPU0_prefill=17 GPU1_decode=0 handoff=0 concurrent=0
+step=1 GPU0_prefill=32 GPU1_decode=1 handoff=1 concurrent=1
+step=2 GPU0_prefill=1 GPU1_decode=1 handoff=0 concurrent=1
+step=3 GPU0_prefill=32 GPU1_decode=2 handoff=1 concurrent=1
+step=4 GPU0_prefill=17 GPU1_decode=2 handoff=0 concurrent=1
+step=5 GPU0_prefill=0 GPU1_decode=3 handoff=1 concurrent=0
+step=6 GPU0_prefill=0 GPU1_decode=3 handoff=0 concurrent=0
+step=7 GPU0_prefill=0 GPU1_decode=3 handoff=0 concurrent=0
+step=8 GPU0_prefill=0 GPU1_decode=2 handoff=0 concurrent=0
+step=9 GPU0_prefill=0 GPU1_decode=2 handoff=0 concurrent=0
+step=10 GPU0_prefill=0 GPU1_decode=1 handoff=0 concurrent=0
+step=11 GPU0_prefill=0 GPU1_decode=1 handoff=0 concurrent=0
+request=100 KV_pages=2 payload_bytes=1179648 handoff_ms=2.72992 output=514 326 356 389 407 3142 284 3802
+request=101 KV_pages=3 payload_bytes=1769472 handoff_ms=2.37291 output=34 5918 12 18834 661 34 5918 12
+request=102 KV_pages=4 payload_bytes=2359296 handoff_ms=2.66095 output=12 50 707 9860 12 50 707 9860
+PD/single GPU generated tokens equal; CSV: benchmark/results/task09_11/pd.csv
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+step=0 GPU0_prefill=17 GPU1_decode=0 handoff=0 concurrent=0
+step=1 GPU0_prefill=32 GPU1_decode=1 handoff=1 concurrent=1
+step=2 GPU0_prefill=1 GPU1_decode=1 handoff=0 concurrent=1
+step=3 GPU0_prefill=32 GPU1_decode=2 handoff=1 concurrent=1
+step=4 GPU0_prefill=17 GPU1_decode=2 handoff=0 concurrent=1
+step=5 GPU0_prefill=0 GPU1_decode=3 handoff=1 concurrent=0
+step=6 GPU0_prefill=0 GPU1_decode=3 handoff=0 concurrent=0
+step=7 GPU0_prefill=0 GPU1_decode=3 handoff=0 concurrent=0
+step=8 GPU0_prefill=0 GPU1_decode=2 handoff=0 concurrent=0
+step=9 GPU0_prefill=0 GPU1_decode=2 handoff=0 concurrent=0
+step=10 GPU0_prefill=0 GPU1_decode=1 handoff=0 concurrent=0
+step=11 GPU0_prefill=0 GPU1_decode=1 handoff=0 concurrent=0
+request=100 KV_pages=2 payload_bytes=1179648 handoff_ms=2.22448 output=514 326 356 389 407 3142 284 3802
+request=101 KV_pages=3 payload_bytes=1769472 handoff_ms=2.85893 output=34 5918 12 18834 661 34 5918 12
+request=102 KV_pages=4 payload_bytes=2359296 handoff_ms=2.69616 output=12 50 707 9860 12 50 707 9860
+PD/single GPU generated tokens equal; CSV: benchmark/results/task09_11/pd_graph.csv
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+repeat=1 total=8.352 ms throughput=1915.738 tok/s TTFT P50/P95=1.841/3.306 ms TPOT P50/P95=1.710/1.723 ms
+repeat=2 total=8.254 ms throughput=1938.476 tok/s TTFT P50/P95=1.775/3.214 ms TPOT P50/P95=1.693/1.718 ms
+repeat=3 total=8.300 ms throughput=1927.686 tok/s TTFT P50/P95=1.781/3.249 ms TPOT P50/P95=1.719/1.727 ms
+repeat=4 total=8.105 ms throughput=1974.094 tok/s TTFT P50/P95=1.747/3.189 ms TPOT P50/P95=1.663/1.696 ms
+repeat=5 total=8.088 ms throughput=1978.121 tok/s TTFT P50/P95=1.710/3.160 ms TPOT P50/P95=1.673/1.706 ms
+repeat=6 total=8.164 ms throughput=1959.780 tok/s TTFT P50/P95=1.693/3.133 ms TPOT P50/P95=1.695/1.709 ms
+repeat=7 total=8.319 ms throughput=1923.254 tok/s TTFT P50/P95=1.794/3.272 ms TPOT P50/P95=1.706/1.738 ms
+GPU 服务 Benchmark 原始结果已写入 benchmark/results/task09_11/rows_full.json 和 benchmark/results/task09_11/rows_full.csv
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+repeat=1 total=8.302 ms throughput=1927.283 tok/s TTFT P50/P95=1.809/3.245 ms TPOT P50/P95=1.707/1.722 ms
+repeat=2 total=7.959 ms throughput=2010.220 tok/s TTFT P50/P95=1.702/3.078 ms TPOT P50/P95=1.641/1.642 ms
+repeat=3 total=7.950 ms throughput=2012.454 tok/s TTFT P50/P95=1.645/3.013 ms TPOT P50/P95=1.673/1.678 ms
+repeat=4 total=8.050 ms throughput=1987.684 tok/s TTFT P50/P95=1.721/3.109 ms TPOT P50/P95=1.669/1.677 ms
+repeat=5 total=8.037 ms throughput=1990.720 tok/s TTFT P50/P95=1.653/3.055 ms TPOT P50/P95=1.672/1.700 ms
+repeat=6 total=8.104 ms throughput=1974.411 tok/s TTFT P50/P95=1.744/3.151 ms TPOT P50/P95=1.679/1.687 ms
+repeat=7 total=8.038 ms throughput=1990.663 tok/s TTFT P50/P95=1.718/3.107 ms TPOT P50/P95=1.673/1.673 ms
+GPU 服务 Benchmark 原始结果已写入 benchmark/results/task09_11/rows_pruned.json 和 benchmark/results/task09_11/rows_pruned.csv
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+repeat=1 total=5.330 ms throughput=3001.707 tok/s TTFT P50/P95=1.170/2.189 ms TPOT P50/P95=1.014/1.199 ms
+repeat=2 total=5.317 ms throughput=3009.233 tok/s TTFT P50/P95=1.155/2.168 ms TPOT P50/P95=1.021/1.192 ms
+repeat=3 total=5.307 ms throughput=3014.635 tok/s TTFT P50/P95=1.151/2.164 ms TPOT P50/P95=1.012/1.192 ms
+repeat=4 total=5.299 ms throughput=3019.312 tok/s TTFT P50/P95=1.154/2.165 ms TPOT P50/P95=1.018/1.190 ms
+repeat=5 total=5.317 ms throughput=3009.474 tok/s TTFT P50/P95=1.151/2.169 ms TPOT P50/P95=1.025/1.197 ms
+repeat=6 total=5.314 ms throughput=3010.634 tok/s TTFT P50/P95=1.158/2.174 ms TPOT P50/P95=1.021/1.195 ms
+repeat=7 total=5.296 ms throughput=3020.883 tok/s TTFT P50/P95=1.150/2.159 ms TPOT P50/P95=1.014/1.187 ms
+GPU 服务 Benchmark 原始结果已写入 benchmark/results/task09_11/rows_full_graph.json 和 benchmark/results/task09_11/rows_full_graph.csv
+[GPT-2]
+max_seq_len: 1024
+vocab_size: 50257
+padded_vocab_size: 50304
+num_layers: 12
+num_heads: 12
+channels: 768
+num_parameters: 124475904
+repeat=1 total=5.248 ms throughput=3048.708 tok/s TTFT P50/P95=1.118/2.099 ms TPOT P50/P95=1.019/1.154 ms
+repeat=2 total=5.231 ms throughput=3058.848 tok/s TTFT P50/P95=1.115/2.092 ms TPOT P50/P95=1.017/1.149 ms
+repeat=3 total=5.227 ms throughput=3061.209 tok/s TTFT P50/P95=1.104/2.092 ms TPOT P50/P95=1.016/1.162 ms
+repeat=4 total=5.210 ms throughput=3071.205 tok/s TTFT P50/P95=1.110/2.082 ms TPOT P50/P95=1.014/1.143 ms
+repeat=5 total=5.206 ms throughput=3073.638 tok/s TTFT P50/P95=1.103/2.074 ms TPOT P50/P95=1.014/1.143 ms
+repeat=6 total=5.205 ms throughput=3073.742 tok/s TTFT P50/P95=1.106/2.078 ms TPOT P50/P95=1.011/1.144 ms
+repeat=7 total=5.241 ms throughput=3052.837 tok/s TTFT P50/P95=1.113/2.095 ms TPOT P50/P95=1.017/1.155 ms
+GPU 服务 Benchmark 原始结果已写入 benchmark/results/task09_11/rows_pruned_graph.json 和 benchmark/results/task09_11/rows_pruned_graph.csv

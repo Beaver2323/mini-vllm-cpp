@@ -108,6 +108,7 @@ public:
     std::size_t prefix_cache_hit_blocks() const {
         return block_manager_.prefix_cache_hit_blocks();
     }
+    void clear_prefix_cache() { block_manager_.clear_prefix_cache(); }
     const GPT2CudaModelRunner& model_runner() const {
         return model_runner_;
     }

@@ -19,6 +19,9 @@
 | Scheduler/ModelRunner 闭环 | 已完成 CPU/CUDA 基线 | 混合 Decode/Chunked Prefill、设备 Argmax、commit/release |
 | 可复现 Benchmark | 已完成 CPU/CUDA 基线 | TTFT/TPOT、吞吐、CSV/JSON 与 Nsight Systems 结果 |
 | Prefix Cache | 已完成第一版 | 完整 Block 内容寻址、引用计数共享、LRU 驱逐与 GPU KV 复用 |
+| 采样行裁剪 | 已完成 | 零/单/多采样行、Gather、二维 Graph Key、全行参考 |
+| Prefix Cache 性能评估 | 已完成 | 16/64/128/256 Token 前缀 off/miss/hit 三组测试 |
+| 双 GPU PD 分离 | 已完成功能版 | 主机中转、页映射、首 Token 交接、背压、CPU/单卡与跨卡 logits |
 | 抢占 | 未开始 | 后续按学习需要单独设计 |
 | CUDA Paged Attention | 已完成并接入 GPT-2 | GPU KV Cache、Slot Mapping、模型级 reference 与 Sanitizer |
 | Multi-Token Prefill | 已完成第一版 | Packed Token GEMM、因果分页 Attention、Token Budget Sweep |
@@ -231,3 +234,13 @@ Replay 前更新。
 
 每读完一个文件，回答三个问题：它拥有什么状态、保持什么不变量、向下一层输出什么。
 不要先钻进 Tensor Parallel 或 CUDA Graph；它们建立在上述主链路之上。
+
+## 任务 09—11 完成后的学习安排
+
+必做的采样行裁剪、Prefix Cache 性能对照以及双 GPU PD 功能均已完成，见
+[结果和复现](../benchmark/results/task09_11/README.md)。先按
+[任务 09](task_09_sample_rows_zh.md) → [任务 10](task_10_prefix_benchmark_zh.md) →
+[任务 11](task_11_pd_disaggregation_zh.md) 跟踪代码和运行测试，再决定后续方向。
+
+当前没有继续扩展功能的必做项。PD 的 pinned buffer 复用、异步传输、两卡完整请求副本对照、
+TP、抢占和 HTTP 服务都留作可选工作，本轮未扩展。PD 当前偏功能学习，保留真实的负性能结果。

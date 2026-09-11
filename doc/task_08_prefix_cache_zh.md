@@ -1,5 +1,8 @@
 # 开发任务 08 学习手册：完整 Block Prefix Cache
 
+任务 09 起调试 logits 只返回采样行；本测试第二请求的映射为 `[1]`，返回一行词表。
+三组性能对照已补在 [任务 10](task_10_prefix_benchmark_zh.md)。
+
 这份文档按一次真实请求的调用顺序讲 Prefix Cache。阅读时不要只看 `BlockManager`，因为
 缓存命中只有同时改变 Sequence 计算进度、Scheduler 调度量、ModelInput 页表和 GPU KV
 读取地址，才算真正接通。
@@ -25,7 +28,7 @@
 | 新 KV 注册缓存 | [`cache_computed_prefix_blocks`](../mini_vllm/block_manager.hpp#L133-L159) | [`Scheduler::commit`](../mini_vllm/scheduler.hpp#L87-L120) |
 | 容量保证与驱逐 | [`ensure_capacity`](../mini_vllm/block_manager.hpp#L69-L96) | [`evict_one_cached_block`](../mini_vllm/block_manager.hpp#L262-L280) |
 | 请求完成释放 | [`release`](../mini_vllm/block_manager.hpp#L174-L201) | `Scheduler::commit` 111 行 |
-| 页表变成 GPU 地址 | [`prepare_packed_model_input`](../mini_vllm/model_input.hpp#L41-L110) | [`paged_attention_decode`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1034-L1044) |
+| 页表变成 GPU 地址 | [`prepare_packed_model_input`](../mini_vllm/model_input.hpp#L41-L110) | [`paged_attention_decode`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1179-L1189) |
 | 控制面测试 | [`test_prefix_cache_hit_and_lru_eviction`](../dev/test_mini_vllm_control_plane.cpp#L120-L168) | Block Size 4，便于手算 |
 | GPU 模型级测试 | [`test_gpt2_cuda_prefix_cache.cu`](../dev/cuda/test_gpt2_cuda_prefix_cache.cu#L34-L116) | FP16，真实 12 层 KV 复用 |
 
@@ -378,7 +381,7 @@ std::copy(sequence.block_table().begin(),
 但每行完整复制 Sequence 的 Block Table，其中第 0 项仍指向第一请求留下的物理页。
 
 Runner 把 `block_tables`、`context_lengths` 和 `slot_mapping` 上传 GPU，并在每一层调用
-[`paged_attention_decode`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1034-L1044)：
+[`paged_attention_decode`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1179-L1189)：
 
 ```cpp
 paged_attention_decode(

@@ -55,17 +55,22 @@ static StepValidation validate_and_commit(
         validation.expected_metadata_bytes += sizeof(int) *
             (4 * input.batch_size() + input.block_tables.size());
     }
-    assert(runner.last_host_to_device_bytes() ==
-           validation.expected_metadata_bytes);
+    // 裁剪路径额外上传采样行索引；完整 logits 基线不需要它。
+    const auto& logit_rows = runner.last_logit_token_indices();
+    const std::size_t metadata = runner.last_host_to_device_bytes();
+    assert(metadata == validation.expected_metadata_bytes ||
+           metadata == validation.expected_metadata_bytes + sizeof(int) * logit_rows.size());
+    validation.expected_metadata_bytes = metadata;
 
     const ModelInput& final_input = inputs.back();
     const std::vector<float> gpu_logits =
         runner.last_logits_for_testing();
     assert(gpu_logits.size() ==
-           final_input.batch_size() *
+           logit_rows.size() *
                static_cast<std::size_t>(model.config.padded_vocab_size));
 
-    for (std::size_t row = 0; row < final_input.batch_size(); ++row) {
+    for (std::size_t logit_row = 0; logit_row < logit_rows.size(); ++logit_row) {
+        const std::size_t row = logit_rows[logit_row];
         const std::size_t item_index =
             final_input.scheduled_item_indices[row];
         const Sequence& sequence = *output.items[item_index].sequence;
@@ -78,7 +83,7 @@ static StepValidation validate_and_commit(
             static_cast<std::size_t>(prefix_length - 1) *
                 model.config.padded_vocab_size;
         const float* actual =
-            gpu_logits.data() + row * model.config.padded_vocab_size;
+            gpu_logits.data() + logit_row * model.config.padded_vocab_size;
         for (int token_id = 0; token_id < model.config.vocab_size;
              ++token_id) {
             validation.max_abs_logit_error = std::max(
@@ -118,6 +123,7 @@ int main(int argc, char** argv) {
     CudaDataType data_type = CudaDataType::FP32;
     bool enable_fusion = true;
     bool enable_cuda_graph = false;
+    bool pruning = true;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
         if (argument == "--precision" && index + 1 < argc) {
@@ -132,6 +138,8 @@ int main(int argc, char** argv) {
             }
         } else if (argument == "--disable-fusion") {
             enable_fusion = false;
+        } else if (argument == "--full-logits") {
+            pruning = false;
         } else if (argument == "--cuda-graph") {
             enable_cuda_graph = true;
         } else {
@@ -163,6 +171,7 @@ int main(int argc, char** argv) {
         data_type,
         enable_fusion,
         enable_cuda_graph,
+        pruning,
     };
     GPT2CudaModelRunner runner(
         cuda_config, model.params_memory, model.num_parameters,

@@ -1,5 +1,7 @@
 # 开发任务 07 学习手册：Residual + LayerNorm 融合与 CUDA Graph
 
+当前代码已加入任务 09 的采样行裁剪，图缓存键已更新；下方任务 07 性能表保留原始实验口径。
+
 这份文档用于沿着真实代码学习。建议打开编辑器后左右分屏：左边放本文，右边按每节给出的
 文件和函数跳转。行号对应当前提交；以后代码变化时优先按函数名搜索。
 
@@ -10,19 +12,19 @@
 1. GPT-2 Pre-LN Block 中，哪些 Residual 与 LayerNorm 可以融合？
 2. 为什么融合路径仍保留一次初始 LayerNorm？
 3. CUDA Graph 固定了什么，为什么每轮仍能换 Token 和页表？
-4. 为什么 Graph Cache 以 Packed Token 数分桶？
+4. 为什么 Graph Cache 需要同时考虑 Packed Token 数和采样行数？
 5. 为什么 Kernel 数下降不一定带来端到端加速？
 
 | 学习点 | 先看哪里 | 再看调用点 |
 | --- | --- | --- |
 | 功能开关 | [`GPT2CudaConfig`](../mini_vllm/cuda/gpt2_cuda_model_runner.cuh#L19-L29) | [`benchmark` 参数解析](../benchmark/benchmark_gpt2_cuda_serving.cu#L190-L230) |
-| 通用融合 Kernel | [`residual_layernorm_kernel`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L374-L431) | [`fused_residual_layernorm`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L913-L937) |
-| FP16 `half2` Kernel | [`residual_layernorm_half2_kernel`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L433-L499) | `channels % 2 == 0` 分发分支 |
-| Attention 后融合 | [`forward` 中的第一次融合](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1046-L1089) | Attention Projection 之后 |
-| MLP 后融合 | [`forward` 中的第二次融合](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1110-L1156) | 下一层 LN1 或最终 LN |
-| Graph 元数据边界 | [`forward` 的 H2D 拷贝](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L940-L960) | Capture/Replay 判断之前 |
-| Graph Capture/Replay | [`forward` 的 Graph 分支](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L962-L985) | 计算区及 `cudaGraphLaunch` |
-| Graph 缓存结构 | [`CudaGraphEntry`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1251-L1255) | 析构释放见 700--709 行 |
+| 通用融合 Kernel | [`residual_layernorm_kernel`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L389-L446) | [`fused_residual_layernorm`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1052-L1076) |
+| FP16 `half2` Kernel | [`residual_layernorm_half2_kernel`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L448-L514) | `channels % 2 == 0` 分发分支 |
+| Attention 后融合 | [`forward` 中的第一次融合](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1191-L1234) | Attention Projection 之后 |
+| MLP 后融合 | [`forward` 中的第二次融合](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1255-L1301) | 下一层 LN1 或最终 LN |
+| Graph 元数据边界 | [`forward` 的 H2D 拷贝](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1079-L1099) | Capture/Replay 判断之前 |
+| Graph Capture/Replay | [`forward` 的 Graph 分支](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1107-L1130) | 计算区及 `cudaGraphLaunch` |
+| Graph 缓存结构 | [`CudaGraphEntry`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1407-L1411) | 析构释放见 700--709 行 |
 | 正确性验证 | [`test_gpt2_cuda_model_runner.cu`](../dev/cuda/test_gpt2_cuda_model_runner.cu#L117-L250) | `validate_and_commit` |
 | 性能测量 | [`run_once`](../benchmark/benchmark_gpt2_cuda_serving.cu#L124-L180) | `main` 中 Warmup/Repeat 复用 Engine |
 
@@ -58,7 +60,7 @@ scheduler_.commit(output, result.sampled_token_ids);
 Runner 的执行面，不改变 Scheduler 语义。
 
 Runner 的上层入口在
-[`GPT2CudaModelRunner::Impl::run`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L711-L753)：
+[`GPT2CudaModelRunner::Impl::run`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L740-L798)：
 
 ```cpp
 ModelInput input = prepare_packed_model_input(
@@ -101,7 +103,7 @@ Attention 或 MLP 的输入。融合不是把残差结果删掉。
 ### 3.2 通用 Kernel：一行 Token 对应一个 CUDA Block
 
 实现位置：
-[`residual_layernorm_kernel`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L377-L431)。
+[`residual_layernorm_kernel`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L392-L446)。
 
 ```cpp
 const int row = blockIdx.x;       // 第几个 Packed Token
@@ -146,7 +148,7 @@ normalized_output[index] = from_float<T>(
 ### 3.3 FP16 `half2` 路径
 
 实现位置：
-[`residual_layernorm_half2_kernel`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L433-L499)。
+[`residual_layernorm_half2_kernel`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L448-L514)。
 
 ```cpp
 const int pair_width = channels / 2;
@@ -174,13 +176,13 @@ if constexpr (std::is_same<T, __half>::value) {
 ```
 
 调用点在
-[`fused_residual_layernorm`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L913-L937)。
+[`fused_residual_layernorm`](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1052-L1076)。
 GPT-2 124M 的 `channels=768`，所以实际会进入 `half2`。
 
 ### 3.4 两处融合调用为什么使用不同 LayerNorm 参数
 
 Attention Projection 后的调用位于
-[`forward` 1053--1061 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1053-L1061)：
+[`forward` 1053--1061 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1198-L1206)：
 
 ```cpp
 fused_residual_layernorm(
@@ -195,7 +197,7 @@ fused_residual_layernorm(
 `LN2(residual_b)`。
 
 MLP Projection 后的调用位于
-[`forward` 1118--1131 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1118-L1131)：
+[`forward` 1118--1131 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1263-L1276)：
 
 ```cpp
 const bool has_next_layer = layer + 1 < config_.num_layers;
@@ -230,7 +232,7 @@ Nsight 记录 10 次模型前向，因此模型计算 Kernel 从 2080 降到 184
 ### 4.1 为什么当前 Runner 适合 Capture
 
 Runner 构造时一次性分配最大容量的设备 Buffer。实现位于
-[`Impl` 构造函数](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L650-L697)：
+[`Impl` 构造函数](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L676-L726)：
 
 ```cpp
 token_ids_(max_num_tokens_),
@@ -270,16 +272,19 @@ H2D(metadata round N) → cudaGraphLaunch(graph shape K) → D2H(sample)
 如果把 H2D Capture 进图，源 Host 指针和拷贝长度也会成为 Graph Node 参数，当前教学实现
 需要额外做 pinned staging buffer 或 Graph Node Update。把动态拷贝放在图外，边界更清楚。
 
-### 4.3 Cache Key 为什么是 `batch_size`
+### 4.3 Cache Key 为什么是 `(batch_size, num_logit_rows)`
 
 查找点在 964--966 行：
 
 ```cpp
-const auto graph = cuda_graphs_.find(batch_size);
+const auto graph_key = std::make_pair(batch_size, num_logit_rows);
+const auto graph = cuda_graphs_.find(graph_key);
 ```
 
 这里的 `batch_size = input.batch_size()`，即 Packed Token 数。它会改变 Elementwise Kernel
-Grid、LayerNorm/Fusion Grid、cuBLAS GEMM 维度、Argmax Grid 和 logits 行数。
+Grid、LayerNorm/Fusion Grid 和模型主干 GEMM 维度。任务 09 加入采样行裁剪后，
+`num_logit_rows` 独立决定 LM Head、Argmax 和 logits 行数，因此一起进入 Key。
+具体采样行索引作为图外更新的动态数据，详见 [任务 09](task_09_sample_rows_zh.md)。
 
 模型层数、Channels、精度、Fusion 开关和 Buffer 地址在同一个 Runner 构造后不变，所以
 当前无需进入 Key。若以后让同一 Runner 动态切换精度、模型或 Fusion，Key 也必须扩展。
@@ -287,7 +292,7 @@ Grid、LayerNorm/Fusion Grid、cuBLAS GEMM 维度、Argmax Grid 和 logits 行�
 ### 4.4 首次 Capture 与后续 Replay
 
 实现位置：
-[`forward` 962--985、1166--1185 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L962-L985)。
+[`forward` 962--985、1166--1185 行](../mini_vllm/cuda/gpt2_cuda_model_runner.cu#L1107-L1130)。
 
 首次出现形状：
 
@@ -297,7 +302,7 @@ cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal);
 // 执行区：Embedding → 12 Blocks → Logits → Argmax
 cudaStreamEndCapture(stream, &entry.graph);
 cudaGraphInstantiate(&entry.executable, entry.graph, nullptr, nullptr, 0);
-cuda_graphs_.emplace(batch_size, entry);
+cuda_graphs_.emplace(graph_key, entry);
 cudaGraphLaunch(entry.executable, stream); // 真正执行这次请求
 ```
 
@@ -323,7 +328,7 @@ struct CudaGraphEntry {
     cudaGraph_t graph = nullptr;
     cudaGraphExec_t executable = nullptr;
 };
-std::unordered_map<int, CudaGraphEntry> cuda_graphs_;
+std::map<std::pair<int, int>, CudaGraphEntry> cuda_graphs_;
 ```
 
 Runner 析构函数在 700--709 行先销毁 `cudaGraphExec_t`，再销毁 `cudaGraph_t`。这是资源
@@ -396,7 +401,8 @@ Compute Sanitizer memcheck=0 errors
 ```
 
 `max_abs_logit_error` 不为 0 是 FP16 与 CPU FP32 的数值差异；服务最终输出还要检查
-Argmax Token 一致。Graph Cache Size 为 3 表示该调度轨迹遇到三种 Packed Token 数。
+Argmax Token 一致。这里记录的是任务 07 当时的历史结果。任务 09 后，Graph Key 变为两种行数的组合，
+当前相同调度测试可能得到不同的 Graph 数，应以当前测试输出为准。
 
 ## 7. 复现与调试命令
 

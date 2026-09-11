@@ -15,7 +15,7 @@ Token、Position、Context Length、Slot Mapping 与 Block Table 会进入 GPU M
 | 模块 | 状态 | 说明 |
 | --- | --- | --- |
 | GPT-2 增量解码 | 已完成 | 每步只计算新 Token，复用历史 K/V |
-| 分页 KV Cache | 已完成 CPU 版 | 使用 Block Pool 和 Block Table 管理非连续物理页 |
+| 分页 KV Cache | 已完成 CPU/CUDA 版 | 使用 Block Pool 和 Block Table 管理非连续物理页 |
 | Sequence | 已完成 | 管理请求状态、Prompt、输出 Token 和已计算 Token 数 |
 | BlockManager | 已完成第一版 | 支持 Block 分配、释放、复用和异常检查 |
 | Scheduler | 已完成第一版 | 支持 Token Budget、Chunked Prefill 和动态准入/退出 |
@@ -26,8 +26,11 @@ Token、Position、Context Length、Slot Mapping 与 Block Table 会进入 GPU M
 | Multi-Token Prefill | 已完成第一版 | Packed Token Batch、因果分页 Attention、混合 Prefill/Decode |
 | 混合精度与 Tensor Core | 已完成第一版 | FP16 推荐路径、BF16 实验路径、FP32 归约、half2 向量化 |
 | Residual + LayerNorm 融合 | 已完成实验版 | 独立开关；Eager 负优化，配合 Graph 获得收益 |
-| CUDA Graph | 已完成第一版 | 按 Packed Token 数缓存，动态元数据在 Replay 前更新 |
+| CUDA Graph | 已完成第一版 | 按输入/采样行数缓存，动态元数据在 Replay 前更新 |
 | Prefix Cache | 已完成第一版 | 完整 Block 复用、引用计数、连续命中和 LRU 驱逐 |
+| 采样行裁剪 | 已完成 | 只投影需要采样的行；完整 logits A/B 与 Graph 形状回归 |
+| Prefix Cache 性能对照 | 已完成 | off/miss/hit、不同前缀长度、CPU 参考与逐轮 CSV |
+| 双 GPU PD 分离 | 已完成功能版 | 同进程双模型副本、独立页池、主机中转 KV、请求交接与背压 |
 | 抢占 | 未开始 | 后续按需要开发 |
 
 ## 架构
@@ -261,13 +264,10 @@ Packed Prefill 设计与 Token Budget 曲线见
 [开发任务 07：融合与 CUDA Graph](doc/task_07_fusion_cuda_graph_zh.md)，Prefix Cache 的
 引用计数和 LRU 流程见 [开发任务 08：Prefix Cache](doc/task_08_prefix_cache_zh.md)。
 
-## 下一步开发任务
+## 下一步学习安排
 
-当前核心服务链路已经闭环，后续按学习需要选择一个方向继续：
-
-1. 适配 RMSNorm、RoPE、SwiGLU 和 GQA，运行小型 Qwen/Llama。
-2. 裁剪非采样 Token 的词表投影，降低 FP32 logits 显存和计算。
-3. 在 Prefix Cache 基础上学习 Copy-on-Write 或抢占。
+本轮必做的采样行裁剪、Prefix Cache 性能对照与功能性 PD 分离已完成。先按任务 09、10、11
+学习代码并复现测试，暂不继续增加功能。后续优化可从 PD 的 pinned buffer 复用开始单独评估。
 
 ## 学习文档
 
@@ -281,6 +281,9 @@ Packed Prefill 设计与 Token Budget 曲线见
 - [开发任务 06：混合精度与 Tensor Core](doc/task_06_mixed_precision_zh.md)
 - [开发任务 07：融合与 CUDA Graph](doc/task_07_fusion_cuda_graph_zh.md)
 - [开发任务 08：Prefix Cache](doc/task_08_prefix_cache_zh.md)
+- [开发任务 09：采样行裁剪](doc/task_09_sample_rows_zh.md)
+- [开发任务 10：Prefix Cache 性能对照](doc/task_10_prefix_benchmark_zh.md)
+- [开发任务 11：双 GPU PD 分离](doc/task_11_pd_disaggregation_zh.md)
 - [简历项目表述](doc/resume_project.tex)
 
 ## 来源与许可证
@@ -290,3 +293,22 @@ Git 历史和 MIT License。Mini-vLLM 模块参考
 [vLLM](https://github.com/vllm-project/vllm) 与
 [nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm) 的模块边界独立实现，
 没有复制 nano-vLLM 源代码。
+
+## 新增任务：采样行、前缀测量与双卡 PD
+
+按顺序学习 [任务 09](doc/task_09_sample_rows_zh.md)、[任务 10](doc/task_10_prefix_benchmark_zh.md)、
+[任务 11](doc/task_11_pd_disaggregation_zh.md)。每篇列出实现位置、调用点、关键代码、测试和练习。
+[本机结果](benchmark/results/task09_11/README.md) 同时记录收益和开销：PD 功能已跑通，本次小模型
+短请求测试比单卡慢，不能据此宣称多卡加速。
+
+```bash
+conda activate zyf1
+make test_gpt2_cuda_sample_rows test_gpt2_pd_engine benchmark_gpt2_pd_serving GPU_COMPUTE_CAPABILITY=86
+OMP_NUM_THREADS=8 ./test_gpt2_cuda_sample_rows
+OMP_NUM_THREADS=8 ./test_gpt2_pd_engine
+OMP_NUM_THREADS=8 ./benchmark_gpt2_pd_serving
+```
+
+PD 默认 GPU 0 Prefill、GPU 1 Decode，各加载一份 GPT-2 权重。该入口支持真实跨卡 KV 迁移和
+同时提交两端计算，使用 portable pinned host memory 中转。本机 P2P 不可用；本版不需要
+NVLink、NCCL，也没有实现 Tensor Parallel。完整复现脚本为 `scripts/validate_pd_cuda.sh`。

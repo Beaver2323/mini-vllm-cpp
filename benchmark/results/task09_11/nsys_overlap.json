@@ -1,0 +1,14 @@
+{
+  "说明": "同一次独立 profiler 运行，包含初始化、预热与七次测量；只证明真实 Kernel 重叠，不用 profiler 耗时宣称加速。",
+  "sqlite_sha256": "1ca7d72ffa8282c23fe382924ae9c98982be3b8867081b8be785b6d82c49f66e",
+  "kernel_count": {
+    "0": 26034,
+    "1": 18009
+  },
+  "gpu_kernel_busy_ms": {
+    "0": 126.615269,
+    "1": 78.149528
+  },
+  "simultaneous_kernel_busy_ms": 0.294998,
+  "sample_pairs": 20
+}

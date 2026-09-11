@@ -11,6 +11,9 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <map>
+#include <numeric>
+#include <chrono>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -43,6 +46,18 @@ void check_cuda(cudaError_t error, const char* operation) {
             std::string(operation) + ": " + cudaGetErrorString(error));
     }
 }
+
+// CUDA 当前设备是线程局部状态；每次入口设置并恢复，避免跨卡析构/执行。
+class DeviceGuard {
+public:
+    explicit DeviceGuard(int device) {
+        check_cuda(cudaGetDevice(&previous_), "get current device");
+        if (device != previous_) check_cuda(cudaSetDevice(device), "set runner device");
+    }
+    ~DeviceGuard() { cudaSetDevice(previous_); }
+private:
+    int previous_ = 0;
+};
 
 void check_cublas(cublasStatus_t status, const char* operation) {
     if (status != CUBLAS_STATUS_SUCCESS) {
@@ -620,6 +635,17 @@ __global__ void argmax_kernel(
     if (thread == 0) token_ids[row] = indices[0];
 }
 
+// Gather 只选中每个已完成输入请求的最后一行，避免 Prompt 全行 LM Head。
+template <typename T>
+__global__ void gather_sample_rows_kernel(
+    T* output, const T* input, const int* rows, int count, int channels) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count * channels) return;
+    const int row = index / channels;
+    const int channel = index % channels;
+    output[index] = input[static_cast<std::size_t>(rows[row]) * channels + channel];
+}
+
 int blocks_for(int count) {
     return (count + kThreads - 1) / kThreads;
 }
@@ -667,7 +693,8 @@ public:
           block_tables_(
               static_cast<std::size_t>(max_num_tokens_) *
               max_blocks_per_sequence_),
-          sampled_token_ids_(max_num_tokens_),
+          sampled_token_ids_(max_logit_rows()),
+          sample_rows_(max_logit_rows()),
           key_cache_(cache_elements(), storage_size()),
           value_cache_(cache_elements(), storage_size()),
           residual_a_(batch_channels(), storage_size()),
@@ -682,7 +709,9 @@ public:
           projected_(batch_channels(), storage_size()),
           hidden_(static_cast<std::size_t>(max_num_tokens_) *
                   4 * config_.channels, storage_size()),
-          logits_(static_cast<std::size_t>(max_num_tokens_) *
+          sampled_hidden_(static_cast<std::size_t>(max_logit_rows()) *
+                          config_.channels, storage_size()),
+          logits_(static_cast<std::size_t>(max_logit_rows()) *
                   config_.padded_vocab_size) {
         initialize_parameters(host_parameters);
         check_cuda(
@@ -730,12 +759,27 @@ public:
         ModelInput input = prepare_packed_model_input(
             output, block_manager_, max_context_length_,
             max_blocks_per_sequence_, num_pages_);
+        last_logit_token_indices_.clear();
+        if (config_.enable_sample_row_pruning) {
+            for (std::size_t i = 0; i < output.items.size(); ++i) {
+                const auto& item = output.items[i];
+                if (item.sequence->num_computed_tokens() + item.num_scheduled_tokens ==
+                    item.sequence->num_tokens()) {
+                    last_logit_token_indices_.push_back(static_cast<int>(
+                        input.query_start_locations[i + 1] - 1));
+                }
+            }
+        } else {
+            last_logit_token_indices_.resize(input.batch_size());
+            std::iota(last_logit_token_indices_.begin(), last_logit_token_indices_.end(), 0);
+        }
         const std::vector<int> token_samples =
             config_.data_type == CudaDataType::FP16
                 ? forward<__half>(input)
                 : (config_.data_type == CudaDataType::BF16
                     ? forward<__nv_bfloat16>(input)
                     : forward<float>(input));
+        std::size_t sample_index = 0;
         for (std::size_t item_index = 0;
              item_index < output.items.size(); ++item_index) {
             const ScheduledItem& item = output.items[item_index];
@@ -745,7 +789,8 @@ public:
                 sequence.num_tokens()) {
                 const std::size_t final_token =
                     input.query_start_locations[item_index + 1] - 1;
-                sampled[item_index] = token_samples[final_token];
+                sampled[item_index] = token_samples[
+                    config_.enable_sample_row_pruning ? sample_index++ : final_token];
             }
         }
         last_model_inputs_.push_back(std::move(input));
@@ -753,9 +798,9 @@ public:
     }
 
     std::vector<float> last_logits_for_testing() const {
-        if (last_batch_size_ == 0) return {};
+        if (last_logit_token_indices_.empty()) return {};
         std::vector<float> result(
-            static_cast<std::size_t>(last_batch_size_) *
+            last_logit_token_indices_.size() *
             config_.padded_vocab_size);
         check_cuda(
             cudaMemcpy(
@@ -763,6 +808,10 @@ public:
                 result.size() * sizeof(float), cudaMemcpyDeviceToHost),
             "copy debug logits to host");
         return result;
+    }
+
+    const std::vector<int>& last_logit_token_indices() const {
+        return last_logit_token_indices_;
     }
 
     const std::vector<ModelInput>& last_model_inputs() const {
@@ -779,12 +828,102 @@ public:
         return residual_a_.bytes() + residual_b_.bytes() +
             normalized_.bytes() + qkv_.bytes() + query_.bytes() +
             key_.bytes() + value_.bytes() + attention_.bytes() +
-            projected_.bytes() + hidden_.bytes() + logits_.bytes();
+            projected_.bytes() + hidden_.bytes() + sampled_hidden_.bytes() + logits_.bytes();
     }
     CudaDataType data_type() const { return config_.data_type; }
     std::size_t num_cuda_graphs() const { return cuda_graphs_.size(); }
 
+    KVTransferStats copy_kv_to(Impl& destination, const Sequence& source,
+                              const Sequence& target, std::size_t computed_tokens) {
+        if (this == &destination || config_.device_id == destination.config_.device_id ||
+            config_.data_type != destination.config_.data_type ||
+            config_.num_layers != destination.config_.num_layers ||
+            config_.num_heads != destination.config_.num_heads ||
+            config_.channels != destination.config_.channels ||
+            computed_tokens == 0 || computed_tokens > source.num_computed_tokens() ||
+            computed_tokens > target.num_tokens() ||
+            computed_tokens > static_cast<std::size_t>(destination.max_context_length_)) {
+            throw std::invalid_argument("incompatible KV handoff");
+        }
+        if (!std::equal(source.token_ids().begin(),
+                        source.token_ids().begin() + computed_tokens,
+                        target.token_ids().begin())) {
+            throw std::invalid_argument("KV handoff token prefix mismatch");
+        }
+        KVTransferStats result;
+        result.num_pages = block_manager_.blocks_needed(computed_tokens);
+        if (source.block_table().size() < result.num_pages ||
+            target.block_table().size() < result.num_pages) {
+            throw std::invalid_argument("KV handoff requires allocated page tables");
+        }
+        // 在任何拷贝前检查所有页号，避免部分写入后才发现越界。
+        for (std::size_t i = 0; i < result.num_pages; ++i) {
+            if (source.block_table()[i] < 0 || source.block_table()[i] >= num_pages_ ||
+                target.block_table()[i] < 0 || target.block_table()[i] >= destination.num_pages_) {
+                throw std::out_of_range("KV handoff page out of range");
+            }
+        }
+        const std::size_t page_bytes = key_cache_.bytes() / num_pages_;
+        result.payload_bytes = 2 * result.num_pages * page_bytes;
+        using Clock = std::chrono::steady_clock;
+        auto ms = [](Clock::time_point a, Clock::time_point b) {
+            return std::chrono::duration<double, std::milli>(b - a).count();
+        };
+        const auto start = Clock::now();
+        void* staging = nullptr;
+        check_cuda(cudaHostAlloc(&staging, result.payload_bytes, cudaHostAllocPortable),
+                   "allocate pinned KV staging");
+        try {
+            const auto begin_d2h = Clock::now();
+            {
+                DeviceGuard guard(config_.device_id);
+                for (int kv = 0; kv < 2; ++kv) {
+                    const auto* cache = static_cast<const char*>(
+                        kv == 0 ? key_cache_.data() : value_cache_.data());
+                    for (std::size_t i = 0; i < result.num_pages; ++i) {
+                        check_cuda(cudaMemcpyAsync(
+                            static_cast<char*>(staging) + (kv * result.num_pages + i) * page_bytes,
+                            cache + source.block_table()[i] * page_bytes, page_bytes,
+                            cudaMemcpyDeviceToHost, stream_.get()), "stage source KV page");
+                    }
+                }
+                check_cuda(cudaStreamSynchronize(stream_.get()), "complete KV D2H");
+            }
+            const auto begin_h2d = Clock::now();
+            {
+                DeviceGuard guard(destination.config_.device_id);
+                for (int kv = 0; kv < 2; ++kv) {
+                    auto* cache = static_cast<char*>(kv == 0
+                        ? destination.key_cache_.data() : destination.value_cache_.data());
+                    for (std::size_t i = 0; i < result.num_pages; ++i) {
+                        check_cuda(cudaMemcpyAsync(
+                            cache + target.block_table()[i] * page_bytes,
+                            static_cast<char*>(staging) + (kv * result.num_pages + i) * page_bytes,
+                            page_bytes, cudaMemcpyHostToDevice, destination.stream_.get()),
+                            "restore destination KV page");
+                    }
+                }
+                check_cuda(cudaStreamSynchronize(destination.stream_.get()), "complete KV H2D");
+            }
+            result.d2h_ms = ms(begin_d2h, begin_h2d);
+            result.h2d_ms = ms(begin_h2d, Clock::now());
+        } catch (...) {
+            // 异常路径也要等未完成 DMA 结束才能释放 staging。
+            { DeviceGuard guard(config_.device_id); cudaStreamSynchronize(stream_.get()); }
+            { DeviceGuard guard(destination.config_.device_id); cudaStreamSynchronize(destination.stream_.get()); }
+            cudaFreeHost(staging);
+            throw;
+        }
+        check_cuda(cudaFreeHost(staging), "free pinned KV staging");
+        result.total_ms = ms(start, Clock::now());
+        return result;
+    }
+
 private:
+    int max_logit_rows() const {
+        return config_.enable_sample_row_pruning ? max_num_sequences_ : max_num_tokens_;
+    }
+
     static std::size_t sum(const std::vector<std::size_t>& values) {
         std::size_t result = 0;
         for (std::size_t value : values) result += value;
@@ -959,10 +1098,16 @@ private:
         copy_metadata(
             block_tables_, input.block_tables, "copy block tables");
 
+        const int num_logit_rows = static_cast<int>(last_logit_token_indices_.size());
+        if (config_.enable_sample_row_pruning && num_logit_rows > 0) {
+            copy_metadata(sample_rows_, last_logit_token_indices_, "copy sample rows");
+        }
+        // Grid/GEMM 随输入行数和采样行数变化；行索引本身在图外更新。
+        const auto graph_key = std::make_pair(batch_size, num_logit_rows);
         bool replay_existing_graph = false;
         bool capture_new_graph = false;
         if (config_.enable_cuda_graph) {
-            const auto graph = cuda_graphs_.find(batch_size);
+            const auto graph = cuda_graphs_.find(graph_key);
             if (graph != cuda_graphs_.end()) {
                 check_cuda(
                     cudaGraphLaunch(graph->second.executable, stream_.get()),
@@ -1154,13 +1299,23 @@ private:
                 batch_size, channels);
             check_last_kernel("final layernorm");
         }
-        logits_matmul(
-            normalized_.get<T>(), parameters_view.wte,
-            batch_size, channels, config_.padded_vocab_size);
-        argmax_kernel<<<batch_size, kThreads, 0, stream_.get()>>>(
-            logits_.get(), sampled_token_ids_.get(), batch_size,
-            config_.vocab_size, config_.padded_vocab_size);
-        check_last_kernel("argmax_kernel");
+        if (num_logit_rows > 0) {
+            const T* lm_input = normalized_.get<T>();
+            if (config_.enable_sample_row_pruning) {
+                gather_sample_rows_kernel<T><<<
+                    blocks_for(num_logit_rows * channels), kThreads, 0, stream_.get()>>>(
+                    sampled_hidden_.get<T>(), normalized_.get<T>(), sample_rows_.get(),
+                    num_logit_rows, channels);
+                check_last_kernel("gather_sample_rows_kernel");
+                lm_input = sampled_hidden_.get<T>();
+            }
+            logits_matmul(lm_input, parameters_view.wte,
+                          num_logit_rows, channels, config_.padded_vocab_size);
+            argmax_kernel<<<num_logit_rows, kThreads, 0, stream_.get()>>>(
+                logits_.get(), sampled_token_ids_.get(), num_logit_rows,
+                config_.vocab_size, config_.padded_vocab_size);
+            check_last_kernel("argmax_kernel");
+        }
         }
 
         if (capture_new_graph) {
@@ -1173,7 +1328,7 @@ private:
                     &entry.executable, entry.graph, nullptr, nullptr, 0),
                 "instantiate CUDA graph");
             const auto inserted =
-                cuda_graphs_.emplace(batch_size, entry);
+                cuda_graphs_.emplace(graph_key, entry);
             if (!inserted.second) {
                 cudaGraphExecDestroy(entry.executable);
                 cudaGraphDestroy(entry.graph);
@@ -1184,8 +1339,8 @@ private:
                 "launch newly captured CUDA graph");
         }
 
-        std::vector<int> sampled(batch_size);
-        check_cuda(
+        std::vector<int> sampled(num_logit_rows);
+        if (num_logit_rows > 0) check_cuda(
             cudaMemcpyAsync(
                 sampled.data(), sampled_token_ids_.get(),
                 sampled.size() * sizeof(int), cudaMemcpyDeviceToHost,
@@ -1194,7 +1349,6 @@ private:
         check_cuda(
             cudaStreamSynchronize(stream_.get()),
             "finish CUDA GPT-2 micro batch");
-        last_batch_size_ = batch_size;
         return sampled;
     }
 
@@ -1231,6 +1385,7 @@ private:
     DeviceBuffer<int> slot_mapping_;
     DeviceBuffer<int> block_tables_;
     DeviceBuffer<int> sampled_token_ids_;
+    DeviceBuffer<int> sample_rows_;
     DeviceTensorBuffer key_cache_;
     DeviceTensorBuffer value_cache_;
     DeviceTensorBuffer residual_a_;
@@ -1243,16 +1398,17 @@ private:
     DeviceTensorBuffer attention_;
     DeviceTensorBuffer projected_;
     DeviceTensorBuffer hidden_;
+    DeviceTensorBuffer sampled_hidden_;
     DeviceBuffer<float> logits_;
+    std::vector<int> last_logit_token_indices_;
     std::vector<ModelInput> last_model_inputs_;
     std::size_t last_host_to_device_bytes_ = 0;
-    int last_batch_size_ = 0;
 
     struct CudaGraphEntry {
         cudaGraph_t graph = nullptr;
         cudaGraphExec_t executable = nullptr;
     };
-    std::unordered_map<int, CudaGraphEntry> cuda_graphs_;
+    std::map<std::pair<int, int>, CudaGraphEntry> cuda_graphs_;
 };
 
 GPT2CudaModelRunner::GPT2CudaModelRunner(
@@ -1261,15 +1417,34 @@ GPT2CudaModelRunner::GPT2CudaModelRunner(
     std::size_t max_num_sequences,
     std::size_t max_num_batched_tokens,
     std::size_t max_context_length)
-    : impl_(std::make_unique<Impl>(
-          config, host_parameters, num_parameters, block_manager,
-          max_num_sequences, max_num_batched_tokens,
-          max_context_length)) {}
+    : device_id_(config.device_id) {
+    if (device_id_ < 0) check_cuda(cudaGetDevice(&device_id_), "resolve runner device");
+    DeviceGuard guard(device_id_);
+    config.device_id = device_id_;
+    impl_ = std::make_unique<Impl>(
+        config, host_parameters, num_parameters, block_manager,
+        max_num_sequences, max_num_batched_tokens, max_context_length);
+}
 
-GPT2CudaModelRunner::~GPT2CudaModelRunner() = default;
+GPT2CudaModelRunner::~GPT2CudaModelRunner() {
+    // 析构不抛异常，但必须在所属设备销毁图、缓冲区、cuBLAS 和 Stream。
+    int previous = 0;
+    cudaGetDevice(&previous);
+    cudaSetDevice(device_id_);
+    impl_.reset();
+    cudaSetDevice(previous);
+}
 
 std::vector<int> GPT2CudaModelRunner::run(const SchedulerOutput& output) {
+    DeviceGuard guard(device_id_);
     return impl_->run(output);
+}
+
+KVTransferStats GPT2CudaModelRunner::copy_kv_to(
+    GPT2CudaModelRunner& destination, const Sequence& source,
+    const Sequence& target, std::size_t computed_tokens) {
+    DeviceGuard guard(device_id_);
+    return impl_->copy_kv_to(*destination.impl_, source, target, computed_tokens);
 }
 
 const std::vector<ModelInput>& GPT2CudaModelRunner::last_model_inputs() const {
@@ -1277,7 +1452,12 @@ const std::vector<ModelInput>& GPT2CudaModelRunner::last_model_inputs() const {
 }
 
 std::vector<float> GPT2CudaModelRunner::last_logits_for_testing() const {
+    DeviceGuard guard(device_id_);
     return impl_->last_logits_for_testing();
+}
+
+const std::vector<int>& GPT2CudaModelRunner::last_logit_token_indices() const {
+    return impl_->last_logit_token_indices();
 }
 
 std::size_t GPT2CudaModelRunner::last_host_to_device_bytes() const {
